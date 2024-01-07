@@ -1,0 +1,6 @@
+.voodoo
+index.data
+index.html
+index.js
+index.wasm
+assets/shaders/wgsl

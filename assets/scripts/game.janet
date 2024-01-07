@@ -1,27 +1,25 @@
-(import voodoo :prefix "")
-
-(var world nil)
-(var player nil)
-
-(defn draw-player []
-  (print "drawing player"))
+(def state @{:camera nil})
 
 (defn init []
-  (set world (ecs/create-world))
-  (set player (ecs/new-id world))
-  (ecs/set world player Transform
-           @{:pos @{:x 0.0 :y 0.0 :z 0.0}})
-  (ecs/system world draw-player ecs/on-update "Transform, Renderable"))
+  (set (state :camera) (cam/new @{:min-dist 2.0
+                                  :max-dist 40.0
+                                  :center @[0.0 1.1 0.0]
+                                  :distance 3.0
+                                  :latitude 20.0
+                                  :longitude 20.0})))
+
+(defn event [e]
+  (cam/handle-event (state :camera) e))
 
 (defn update []
-  (ecs/update world))
+  (cam/update (state :camera)))
 
-(defn shutdown []
-  (ecs/destroy-world world))
+(defn shutdown [])
 
 (defn voodoo []
   @{:width 100
     :height 75
     :init init
+    :event event
     :update update
     :shutdown shutdown})

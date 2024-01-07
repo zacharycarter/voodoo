@@ -35,27 +35,27 @@
 */
 #define VOODOO_INCLUDED (1)
 
-#ifndef VOODOO_API_DECL
-#if defined(_WIN32) && defined(VOODOO_DLL) && defined(VOODOO_IMPL)
-#define VOODOO_API_DECL __declspec(dllexport)
-#elif defined(_WIN32) && defined(VOODOO_DLL)
-#define VOODOO_API_DECL __declspec(dllimport)
-#else
-#define VOODOO_API_DECL extern
-#endif
-#endif
+#include "janet.h"
 
-#ifdef __cplusplus
-extern "C"
+static Janet cfun_vd_app_width(int32_t argc, Janet *argv);
+static Janet cfun_vd_app_height(int32_t argc, Janet *argv);
+static Janet cfun_vd_cam_new(int32_t argc, Janet *argv);
+static Janet cfun_vd_cam_handle_event(int32_t argc, Janet *argv);
+static Janet cfun_vd_cam_update(int32_t argc, Janet *argv);
+
+static void vd__janet_cdefs(JanetTable *env)
 {
-#endif
+}
 
-#ifdef __cplusplus
-} // extern "C"
+static const JanetReg vd__cfuns[] = {
+  {"app/width", cfun_vd_app_width, "(voodoo/app/width)\n\nWidth of the current application."},
+  {"app/height", cfun_vd_app_height, "(voodoo/app/height)\n\nHeight of the current application."},
+  {"cam/new", cfun_vd_cam_new, "(voodoo/cam/new)\n\nCreates a new camera."},
+  {"cam/handle-event", cfun_vd_cam_handle_event,
+   "(voodoo/cam/handle-event)\n\nHandle an event with an existing camera."},
+  {"cam/update", cfun_vd_cam_update, "(voodoo/cam/update)\n\nUpdate an existing camera."},
+  {NULL, NULL, NULL}};
 
-// reference-based equivalents for c++
-
-#endif
 #endif // VOODOO_INCLUDED
 
 //     ______  _______  __    ________  __________   ___________  ______________  _   __
@@ -82,8 +82,6 @@ extern "C"
 #define HANDMADE_MATH_NO_SIMD
 #define HANDMADE_MATH_USE_DEGREES
 #include "hmm.h"
-#include "flecs.h"
-#include "janet.h"
 #define SOKOL_IMPL
 #define SOKOL_WGPU
 #include "sokol_app.h"
@@ -93,7 +91,7 @@ extern "C"
 #include "sokol_log.h"
 #include "sokol_shape.h"
 #include "sokol_time.h"
-#include "cube-sapp.glsl.h"
+#include "shapes.glsl.h"
 
 //    _____________  __  _________________
 //   / __/_  __/ _ \/ / / / ___/_  __/ __/
@@ -102,45 +100,21 @@ extern "C"
 //
 // >>structs
 
+enum
+{
+  VD__BOX = 0,
+  VD__PLANE,
+  VD__SPHERE,
+  VD__CYLINDER,
+  VD__TORUS,
+  VD__NUM_SHAPES
+};
+
 typedef struct
 {
-  float min_dist;
-  float max_dist;
-  float min_lat;
-  float max_lat;
-  float distance;
-  float latitude;
-  float longitude;
-  float aspect;
-  float nearz;
-  float farz;
-  HMM_Vec3 center;
-} vd__camera_desc_t;
-
-ECS_STRUCT(Camera, {
-  float min_dist;
-  float max_dist;
-  float min_lat;
-  float max_lat;
-  float distance;
-  float latitude;
-  float longitude;
-  float aspect;
-  float nearz;
-  float farz;
-  HMM_Vec3 center;
-  HMM_Vec3 eye_pos;
-  HMM_Mat4 view;
-  HMM_Mat4 proj;
-  HMM_Mat4 view_proj;
-});
-typedef Camera vd__camera_t;
-
-typedef ecs_id_t vd__ecs_component_registry_entry;
-
-ZPL_TABLE_DECLARE(static, vd__ecs_component_registry, vd__ecs_component_registry_, vd__ecs_component_registry_entry);
-
-ZPL_TABLE_DEFINE(vd__ecs_component_registry, vd__ecs_component_registry_, vd__ecs_component_registry_entry);
+  HMM_Vec3 pos;
+  sshape_element_range_t draw;
+} vd__dbg_shape;
 
 static struct
 {
@@ -148,6 +122,7 @@ static struct
   {
     JanetFiber *main_fiber;
     JanetFunction *mod_init_cb;
+    JanetFunction *mod_event_cb;
     JanetFunction *mod_update_cb;
     JanetFunction *mod_shutdown_cb;
   } app;
@@ -156,16 +131,20 @@ static struct
   {
     struct
     {
+      struct
+      {
+        sg_buffer buf;
+        int offset;
+      } transform;
+
+      sg_buffer idx_buf;
+      sg_buffer vtx_buf;
+      sg_shader shd;
       sg_pipeline pip;
-      sg_bindings bind;
+      vd__dbg_shape shapes[VD__NUM_SHAPES];
+
     } draw;
   } dbg;
-
-  struct
-  {
-    vd__ecs_component_registry components;
-  } ecs;
-
 } vd__state;
 
 //    __  ______ ________ __
@@ -185,8 +164,40 @@ static const HMM_Vec3 vd__unit_z = {0.0f, 0.0f, 1.0f};
 
 static const HMM_Mat2 vd__identity2 = {.Elements = {{1.0f, 0.0f}, {0.0f, 1.0f}}};
 static const HMM_Mat3 vd__identity3 = {.Elements = {{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}}};
-static const HMM_Mat4 vd_identity4 = {
+static const HMM_Mat4 vd__identity4 = {
   .Elements = {{1.0f, 0.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 1.0f}}};
+
+static float vd__idx_getfloat(JanetView idx, int index)
+{
+  if (index >= idx.len)
+  {
+    janet_panicf("index %d outside of range [0, %d)", idx.len);
+  }
+  if (!janet_checktype(idx.items[index], JANET_NUMBER))
+  {
+    janet_panicf("expected number, got %v", idx.items[index]);
+  }
+  return (float)janet_unwrap_number(idx.items[index]);
+}
+
+static HMM_Vec3 vd__unwrap_vec3(const Janet val)
+{
+  JanetView view;
+  if (!janet_indexed_view(val, &view.items, &view.len))
+  {
+    janet_panic("expected vec to be an indexed type");
+  }
+
+  if (view.len != 3)
+  {
+    janet_panic("vec must have exactly 2 elements");
+  }
+
+  float x = vd__idx_getfloat(view, 0);
+  float y = vd__idx_getfloat(view, 1);
+  float z = vd__idx_getfloat(view, 2);
+  return HMM_V3(x, y, z);
+}
 
 //   ________   __  __________  ___
 //  / ___/ _ | /  |/  / __/ _ \/ _ |
@@ -194,6 +205,9 @@ static const HMM_Mat4 vd_identity4 = {
 // \___/_/ |_/_/  /_/___/_/|_/_/ |_|
 //
 // >>camera
+
+static const JanetAbstractType vd__cam_camera = {"voodoo/cam/camera", JANET_ATEND_NAME};
+static const JanetAbstractType vd__cam_event = {"voodoo/cam/event", JANET_ATEND_NAME};
 
 #define CAMERA_DEFAULT_MIN_DIST (2.0f)
 #define CAMERA_DEFAULT_MAX_DIST (30.0f)
@@ -204,14 +218,47 @@ static const HMM_Mat4 vd_identity4 = {
 #define CAMERA_DEFAULT_NEARZ (0.01f)
 #define CAMERA_DEFAULT_FARZ (100.0f)
 
-ECS_COMPONENT_DECLARE(Camera);
+typedef struct
+{
+  float min_dist;
+  float max_dist;
+  float min_lat;
+  float max_lat;
+  float distance;
+  float latitude;
+  float longitude;
+  float aspect;
+  float nearz;
+  float farz;
+  HMM_Vec3 center;
+} vd__camera_desc_t;
+
+typedef struct
+{
+  float min_dist;
+  float max_dist;
+  float min_lat;
+  float max_lat;
+  float distance;
+  float latitude;
+  float longitude;
+  float aspect;
+  float nearz;
+  float farz;
+  HMM_Vec3 center;
+  HMM_Vec3 eye_pos;
+  HMM_Mat4 view;
+  HMM_Mat4 proj;
+  HMM_Mat4 view_proj;
+} vd__camera_t;
 
 static float vd__cam_def(float val, float def)
 {
   return ((val == 0.0f) ? def : val);
 }
 
-static void vd__cam_orbit(vd__camera_t *cam, const vd__camera_desc_t *desc)
+/* initialize to default parameters */
+static void vd__cam_init(vd__camera_t *cam, const vd__camera_desc_t *desc)
 {
   assert(cam && desc);
   memset(cam, 0, sizeof(vd__camera_t));
@@ -228,313 +275,128 @@ static void vd__cam_orbit(vd__camera_t *cam, const vd__camera_desc_t *desc)
   cam->farz = vd__cam_def(desc->farz, CAMERA_DEFAULT_FARZ);
 }
 
-//    ___  _______  __  _______  ___  ___  ___ _      __
-//   / _ \/ __/ _ )/ / / / ___/ / _ \/ _ \/ _ | | /| / /
-//  / // / _// _  / /_/ / (_ / / // / , _/ __ | |/ |/ /
-// /____/___/____/\____/\___/ /____/_/|_/_/ |_|__/|__/
-//
-// >debugdraw
-
-static const float vd__dbg_draw_cube_vertices[] = {
-  -1.0f, -1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f,  -1.0f, -1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
-  1.0f,  1.0f,  -1.0f, 1.0f, 0.0f, 0.0f, 1.0f, -1.0f, 1.0f,  -1.0f, 1.0f, 0.0f, 0.0f, 1.0f,
-
-  -1.0f, -1.0f, 1.0f,  0.0f, 1.0f, 0.0f, 1.0f, 1.0f,  -1.0f, 1.0f,  0.0f, 1.0f, 0.0f, 1.0f,
-  1.0f,  1.0f,  1.0f,  0.0f, 1.0f, 0.0f, 1.0f, -1.0f, 1.0f,  1.0f,  0.0f, 1.0f, 0.0f, 1.0f,
-
-  -1.0f, -1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 1.0f, -1.0f, 1.0f,  -1.0f, 0.0f, 0.0f, 1.0f, 1.0f,
-  -1.0f, 1.0f,  1.0f,  0.0f, 0.0f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f,  0.0f, 0.0f, 1.0f, 1.0f,
-
-  1.0f,  -1.0f, -1.0f, 1.0f, 0.5f, 0.0f, 1.0f, 1.0f,  1.0f,  -1.0f, 1.0f, 0.5f, 0.0f, 1.0f,
-  1.0f,  1.0f,  1.0f,  1.0f, 0.5f, 0.0f, 1.0f, 1.0f,  -1.0f, 1.0f,  1.0f, 0.5f, 0.0f, 1.0f,
-
-  -1.0f, -1.0f, -1.0f, 0.0f, 0.5f, 1.0f, 1.0f, -1.0f, -1.0f, 1.0f,  0.0f, 0.5f, 1.0f, 1.0f,
-  1.0f,  -1.0f, 1.0f,  0.0f, 0.5f, 1.0f, 1.0f, 1.0f,  -1.0f, -1.0f, 0.0f, 0.5f, 1.0f, 1.0f,
-
-  -1.0f, 1.0f,  -1.0f, 1.0f, 0.0f, 0.5f, 1.0f, -1.0f, 1.0f,  1.0f,  1.0f, 0.0f, 0.5f, 1.0f,
-  1.0f,  1.0f,  1.0f,  1.0f, 0.0f, 0.5f, 1.0f, 1.0f,  1.0f,  -1.0f, 1.0f, 0.0f, 0.5f, 1.0f};
-
-static const uint16_t vd__dbg_draw_cube_indicies[] = {0,  1,  2,  0,  2,  3,  6,  5,  4,  7,  6,  4,
-                                                      8,  9,  10, 8,  10, 11, 14, 13, 12, 15, 14, 12,
-                                                      16, 17, 18, 16, 18, 19, 22, 21, 20, 23, 22, 20};
-
-void vd__dbg_draw_cube()
+/* feed mouse movement */
+static void vd__cam_orbit(vd__camera_t *cam, float dx, float dy)
 {
-  /* NOTE: the vs_params_t struct has been code-generated by the shader-code-gen */
-  vs_params_t vs_params;
-  const float w = sapp_widthf();
-  const float h = sapp_heightf();
-  const float t = (float)(sapp_frame_duration() * 60.0);
-  HMM_Mat4 proj = HMM_Perspective_RH_NO(60.0f, w / h, 0.01f, 10.0f);
-  HMM_Mat4 view = HMM_LookAt_RH(HMM_V3(0.0f, 1.5f, 6.0f), HMM_V3(0.0f, 0.0f, 0.0f), HMM_V3(0.0f, 1.0f, 0.0f));
-  HMM_Mat4 view_proj = HMM_MulM4(proj, view);
-  HMM_Mat4 model = vd_identity4;
-  vs_params.mvp = HMM_MulM4(view_proj, model);
-
-  sg_pass_action pass_action = {
-    .colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0.25f, 0.5f, 0.75f, 1.0f}}};
-  sg_begin_default_pass(&pass_action, (int)w, (int)h);
-  sg_apply_pipeline(vd__state.dbg.draw.pip);
-  sg_apply_bindings(&vd__state.dbg.draw.bind);
-  sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(vs_params));
-  sg_draw(0, 36, 1);
-  sg_end_pass();
-  sg_commit();
-}
-
-void vd__dbg_draw_init()
-{
-  sg_buffer vbuf = sg_make_buffer(
-    &(sg_buffer_desc){.data = SG_RANGE(vd__dbg_draw_cube_vertices), .label = "vd-dbg-draw-cube-vertices"});
-
-  sg_buffer ibuf = sg_make_buffer(&(sg_buffer_desc){.type = SG_BUFFERTYPE_INDEXBUFFER,
-                                                    .data = SG_RANGE(vd__dbg_draw_cube_indicies),
-                                                    .label = "vd-dbg-draw-cube-indices"});
-
-  /* create shader */
-  sg_shader shd = sg_make_shader(cube_shader_desc(sg_query_backend()));
-
-  /* create pipeline object */
-  vd__state.dbg.draw.pip = sg_make_pipeline(&(sg_pipeline_desc){
-    .layout =
-      {/* test to provide buffer stride, but no attr offsets */
-       .buffers[0].stride = 28,
-       .attrs = {[ATTR_vs_position].format = SG_VERTEXFORMAT_FLOAT3, [ATTR_vs_color0].format = SG_VERTEXFORMAT_FLOAT4}},
-    .shader = shd,
-    .index_type = SG_INDEXTYPE_UINT16,
-    .cull_mode = SG_CULLMODE_BACK,
-    .depth =
-      {
-        .write_enabled = true,
-        .compare = SG_COMPAREFUNC_LESS_EQUAL,
-      },
-    .label = "vd-dbg-draw-cube-pipeline"});
-
-  /* setup resource bindings */
-  vd__state.dbg.draw.bind = (sg_bindings){.vertex_buffers[0] = vbuf, .index_buffer = ibuf};
-}
-
-//    _____________
-//   / __/ ___/ __/
-//  / _// /___\ \
-// /___/\___/___/
-//
-// >>ecs
-
-typedef HMM_Vec3 Vec3;
-
-ECS_COMPONENT_DECLARE(Vec3);
-
-ECS_STRUCT(Transform, {
-  Vec3 pos;
-  Vec3 rot;
-  Vec3 scale;
-});
-
-static void vd__ecs_janet_callback(ecs_iter_t *it)
-{
-  Janet out = janet_wrap_nil();
-  const Janet arg = janet_wrap_abstract(it);
-  JanetFiber *fiber = NULL;
-  int sign = janet_pcall(it->binding_ctx, 1, &arg, &out, &fiber);
-  if (sign != JANET_SIGNAL_OK)
+  assert(cam);
+  cam->longitude -= dx;
+  if (cam->longitude < 0.0f)
   {
-    janet_stacktrace(fiber, out);
+    cam->longitude += 360.0f;
   }
-}
-
-static Janet vd__ecs_system(int32_t argc, Janet *argv)
-{
-  janet_fixarity(argc, 4);
-
-  ecs_entity_t e = 0;
-
-  ecs_world_t *w = janet_checktype(argv[0], JANET_POINTER) ? janet_getpointer(argv, 0) : NULL;
-  JanetFunction *cb = janet_checktype(argv[1], JANET_FUNCTION) ? janet_getfunction(argv, 1) : NULL;
-  uint64_t phase = janet_checktype(argv[2], JANET_NUMBER) ? janet_getuinteger64(argv, 2) : 0;
-  const char *query = janet_checktype(argv[3], JANET_STRING) ? janet_getcstring(argv, 3) : NULL;
-
-  ecs_system_desc_t desc = {0};
-  ecs_entity_desc_t edesc = {0};
-  edesc.name = (const char *)cb->def->name;
-  edesc.add[0] = ((phase) ? ecs_pair(EcsDependsOn, (phase)) : 0);
-  edesc.add[1] = (phase);
-  desc.entity = ecs_entity_init(w, &edesc);
-  desc.query.filter.expr = query;
-  desc.callback = vd__ecs_janet_callback;
-  desc.binding_ctx = cb;
-  e = ecs_system_init(w, &desc);
-
-  return janet_wrap_u64(e);
-}
-
-static Janet vd__ecs_prefab(int32_t argc, Janet *argv)
-{
-  janet_arity(argc, 2, 3);
-
-  ecs_world_t *w = janet_getpointer(argv, 0);
-  const char *id = janet_getcstring(argv, 1);
-  const char *sig = janet_optcstring(argv, argc, 2, NULL);
-
-  ecs_entity_t e = ecs_entity_init(w, &(ecs_entity_desc_t){.name = id, .add_expr = sig, .add = {EcsPrefab}});
-  return janet_wrap_u64(e);
-}
-
-static void vd__ecs_init_scope(ecs_world_t *w, ecs_entity_t id)
-{
-  ecs_entity_t scope = ecs_get_scope(w);
-
-  if (scope)
-    ecs_add_pair(w, id, EcsChildOf, scope);
-}
-
-static Janet vd__ecs_component(int32_t argc, Janet *argv)
-{
-  janet_fixarity(argc, 3);
-
-  ecs_world_t *w = janet_getpointer(argv, 0);
-  const uint8_t *name = janet_getkeyword(argv, 1);
-  const char *desc = janet_getcstring(argv, 2);
-
-  //   if(ecs_lookup_fullpath(ent_state.world, name) ||
-  //   ecs_lookup(ent_state.world, name)) luaL_argerror(L, 1, "component already
-  //   exists");
-
-  ecs_entity_t component = ecs_entity_init(w, &(ecs_entity_desc_t){.use_low_id = true});
-
-  ecs_set_name(w, component, (char *)name);
-
-  int err = ecs_meta_from_desc(w, component, EcsStructType, desc);
-
-  // if(err) return luaL_argerror(L, 2, "invalid descriptor");
-
-  ecs_set(w, component, EcsMetaType, {.kind = EcsStructType});
-
-  vd__ecs_init_scope(w, component);
-
-  return janet_wrap_u64(component);
-}
-
-static void vd__ecs_deserialize_type(Janet *argv, int idx, ecs_meta_cursor_t *c, int depth)
-{
-  int ktype, vtype, ret, mtype, prev_ikey;
-  bool in_array = false, designated_initializer = false;
-
-  ret = ecs_meta_push(c);
-  ecs_assert(!ret, ECS_INTERNAL_ERROR, NULL);
-  in_array = ecs_meta_is_collection(c);
-
-  const JanetKV *kv = NULL;
-  const JanetDictView dict = janet_getdictionary(argv, idx);
-  while ((kv = janet_dictionary_next(dict.kvs, dict.cap, kv)))
+  if (cam->longitude > 360.0f)
   {
-    const char *key;
-    if (janet_type(kv->key) == JANET_KEYWORD)
+    cam->longitude -= 360.0f;
+  }
+  cam->latitude = HMM_Clamp(cam->min_lat, cam->latitude + dy, cam->max_lat);
+}
+
+/* feed zoom (mouse wheel) input */
+static void vd__cam_zoom(vd__camera_t *cam, float d)
+{
+  assert(cam);
+  cam->distance = HMM_Clamp(cam->min_dist, cam->distance + d, cam->max_dist);
+}
+
+static HMM_Vec3 vd__cam_euclidean(float latitude, float longitude)
+{
+  const float lat = HMM_AngleDeg(latitude);
+  const float lng = HMM_AngleDeg(longitude);
+  return HMM_V3(cosf(lat) * sinf(lng), sinf(lat), cosf(lat) * cosf(lng));
+}
+
+/* update the view, proj and view_proj matrix */
+static void vd__cam_update(vd__camera_t *cam, int fb_width, int fb_height)
+{
+  assert(cam);
+  assert((fb_width > 0) && (fb_height > 0));
+  const float w = (float)fb_width;
+  const float h = (float)fb_height;
+  cam->eye_pos = HMM_AddV3(cam->center, HMM_MulV3F(vd__cam_euclidean(cam->latitude, cam->longitude), cam->distance));
+  cam->view = HMM_LookAt_RH(cam->eye_pos, cam->center, HMM_V3(0.0f, 1.0f, 0.0f));
+  cam->proj = HMM_Perspective_RH_NO(cam->aspect, w / h, cam->nearz, cam->farz);
+  cam->view_proj = HMM_MulM4(cam->proj, cam->view);
+}
+
+/* handle sokol-app input events */
+static void vd__cam_handle_event(vd__camera_t *cam, const sapp_event *ev)
+{
+  assert(cam);
+  switch (ev->type)
+  {
+  case SAPP_EVENTTYPE_MOUSE_DOWN:
+    if (ev->mouse_button == SAPP_MOUSEBUTTON_LEFT)
     {
-      key = (const char *)janet_unwrap_keyword(kv->key);
-      printf("meta_member field: %s\n", key);
-      ret = ecs_meta_member(c, key);
+      sapp_lock_mouse(true);
     }
-
-    if (janet_type(kv->value) == JANET_NUMBER)
+    break;
+  case SAPP_EVENTTYPE_MOUSE_UP:
+    if (ev->mouse_button == SAPP_MOUSEBUTTON_LEFT)
     {
-      double val = janet_unwrap_number(kv->value);
-      printf("meta_member field: %s and value: %lf\n", key, val);
-      ret = ecs_meta_set_float(c, val);
+      sapp_lock_mouse(false);
     }
+    break;
+  case SAPP_EVENTTYPE_MOUSE_SCROLL:
+    vd__cam_zoom(cam, ev->scroll_y * 0.5f);
+    break;
+  case SAPP_EVENTTYPE_MOUSE_MOVE:
+    if (sapp_mouse_locked())
+    {
+      vd__cam_orbit(cam, ev->mouse_dx * 0.25f, ev->mouse_dy * 0.25f);
+    }
+    break;
+  default:
+    break;
   }
-  ret = ecs_meta_pop(c);
-  ecs_assert(!ret, ECS_INTERNAL_ERROR, NULL);
 }
 
-static ecs_meta_cursor_t *vd__ecs_janet_cursor(ecs_world_t *w, ecs_entity_t type, void *base)
+static Janet cfun_vd_cam_handle_event(int32_t argc, Janet *argv)
 {
-  ecs_meta_cursor_t *cursor = janet_smalloc(sizeof(ecs_meta_cursor_t));
-  *cursor = ecs_meta_cursor(w, type, base);
-  return cursor;
-}
+  janet_fixarity(argc, 2);
 
-static void vd__ecs_janet_to_ptr(ecs_world_t *w, Janet *argv, int idx, ecs_entity_t type, void *ptr)
-{
-  ecs_meta_cursor_t *c = vd__ecs_janet_cursor(w, type, ptr);
-  vd__ecs_deserialize_type(argv, idx, c, 0);
-}
-
-static Janet vd__ecs_set(int32_t argc, Janet *argv)
-{
-  janet_fixarity(argc, 4);
-
-  ecs_world_t *w = janet_getpointer(argv, 0);
-  ecs_entity_t e = janet_getuinteger64(argv, 1);
-
-  ecs_entity_t component =
-    janet_checktype(argv[2], JANET_NUMBER)
-      ? janet_getuinteger64(argv, 2)
-      : ecs_get_type_info(
-          w, *vd__ecs_component_registry_get(
-               &vd__state.ecs.components, zpl_fnv64(janet_getcstring(argv, 2), zpl_strlen(janet_getcstring(argv, 2)))))->component;
-  if (!e)
+  if (!janet_checktype(argv[0], JANET_ABSTRACT))
   {
-    e = ecs_new_id(w);
-    ecs_entity_t scope = ecs_get_scope(w);
-    if (scope)
-      ecs_add_pair(w, e, EcsChildOf, scope);
+    janet_panic("expected camera");
   }
 
-  void *ptr = ecs_get_mut_id(w, e, component);
-  vd__ecs_janet_to_ptr(w, argv, 3, component, ptr);
-  ecs_modified_id(w, e, component);
+  if (!janet_checktype(argv[1], JANET_ABSTRACT))
+  {
+    janet_panic("expected event");
+  }
 
-  return janet_wrap_u64(e);
-}
-
-static Janet vd__ecs_new_id(int32_t argc, Janet *argv)
-{
-  janet_fixarity(argc, 1);
-
-  ecs_world_t *w = janet_getpointer(argv, 0);
-
-  return janet_wrap_u64(ecs_new_id(w));
-}
-
-static Janet vd__ecs_update(int32_t argc, Janet *argv)
-{
-  janet_fixarity(argc, 1);
-
-  ecs_world_t *w = janet_getpointer(argv, 0);
-
-  ecs_progress(w, 0);
-
+  vd__cam_handle_event(janet_unwrap_abstract(argv[0]), janet_unwrap_abstract(argv[1]));
   return janet_wrap_nil();
 }
 
-static Janet vd__ecs_create_world(int32_t argc, Janet *argv)
+static Janet cfun_vd_cam_update(int32_t argc, Janet *argv)
 {
-  ecs_world_t *w = ecs_init();
+  janet_arity(argc, 1, 3);
 
-  ecs_id(Vec3) = ecs_struct_init(
-    w, &(ecs_struct_desc_t){.entity = ecs_entity(w, {.name = "Vec3", .symbol = "HMM_Vec3", .id = ecs_id(Vec3)}),
-                            .members = {{"x", ecs_id(ecs_f32_t)}, {"y", ecs_id(ecs_f32_t)}, {"z", ecs_id(ecs_f32_t)}}});
+  if (!janet_checktype(argv[0], JANET_ABSTRACT))
+  {
+    janet_panic("expected camera");
+  }
 
-  ECS_META_COMPONENT(w, Transform);
-  ECS_TAG(w, Renderable);
-
-  vd__ecs_component_registry_init(&vd__state.ecs.components, zpl_heap_allocator());
-  vd__ecs_component_registry_set(&vd__state.ecs.components,
-                                 zpl_fnv64("Transform", zpl_strlen("Transform")), ecs_id(Transform));
-
-  return janet_wrap_pointer(w);
+  int fb_width = janet_checktype(argv[1], JANET_NUMBER) ? janet_unwrap_number(argv[1]) : sapp_width();
+  int fb_height = janet_checktype(argv[2], JANET_NUMBER) ? janet_unwrap_number(argv[2]) : sapp_height();
+  vd__cam_update(janet_getabstract(argv, 0, &vd__cam_camera), fb_width, fb_height);
+  return janet_wrap_nil();
 }
 
-static Janet vd__ecs_destroy_world(int32_t argc, Janet *argv)
+static Janet cfun_vd_cam_new(int32_t argc, Janet *argv)
 {
   janet_fixarity(argc, 1);
-
-  ecs_world_t *w = janet_getpointer(argv, 0);
-
-  ecs_fini(w);
-
-  return janet_wrap_nil();
+  JanetTable *desc = janet_gettable(argv, 0);
+  vd__camera_t *cam = janet_abstract(&vd__cam_camera, sizeof(vd__camera_t));
+  vd__cam_init(cam, &(vd__camera_desc_t){
+                      .min_dist = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("min-dist"))),
+                      .max_dist = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("max-dist"))),
+                      .center = vd__unwrap_vec3(janet_table_rawget(desc, janet_ckeywordv("center"))),
+                      .distance = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("distance"))),
+                      .latitude = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("latitude"))),
+                      .longitude = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("longitude"))),
+                    });
+  return janet_wrap_abstract(cam);
 }
 
 //   __________  __
@@ -544,8 +406,19 @@ static Janet vd__ecs_destroy_world(int32_t argc, Janet *argv)
 //
 // >>gfx
 
-void vd__gfx_render()
+sg_buffer vd__gfx_buffer_append(sg_buffer buf, size_t size, const void *data, int *offset)
 {
+  if (buf.id == SG_INVALID_ID || sg_query_buffer_will_overflow(buf, size))
+  {
+    sg_buffer_info bi = sg_query_buffer_info(buf);
+    buf = sg_make_buffer(&(sg_buffer_desc){
+      .size = bi.append_pos + size,
+      .usage = SG_USAGE_STREAM,
+      .type = SG_BUFFERTYPE_VERTEXBUFFER,
+    });
+  }
+  *offset = sg_append_buffer(buf, &(sg_range){.ptr = data, .size = size});
+  return buf;
 }
 
 void vd__gfx_init()
@@ -556,6 +429,125 @@ void vd__gfx_init()
   });
 }
 
+//    ___  _______  __  _______  ___  ___  ___ _      __
+//   / _ \/ __/ _ )/ / / / ___/ / _ \/ _ \/ _ | | /| / /
+//  / // / _// _  / /_/ / (_ / / // / , _/ __ | |/ |/ /
+// /____/___/____/\____/\___/ /____/_/|_/_/ |_|__/|__/
+//
+// >debugdraw
+void vd__dbg_draw_cube(HMM_Vec3 pos)
+{
+  HMM_Mat4 transform = HMM_Translate(pos);
+  vd__state.dbg.draw.transform.buf = vd__gfx_buffer_append(vd__state.dbg.draw.transform.buf, sizeof(HMM_Mat4),
+                                                           &transform, &vd__state.dbg.draw.transform.offset);
+
+  /* NOTE: the vs_params_t struct has been code-generated by the shader-code-gen */
+  vs_params_t vs_params;
+  const float w = sapp_widthf();
+  const float h = sapp_heightf();
+  const float t = (float)(sapp_frame_duration() * 60.0);
+  HMM_Mat4 proj = HMM_Perspective_RH_NO(60.0f, w / h, 0.01f, 10.0f);
+  HMM_Mat4 view = HMM_LookAt_RH(HMM_V3(0.0f, 1.5f, 6.0f), HMM_V3(0.0f, 0.0f, 0.0f), HMM_V3(0.0f, 1.0f, 0.0f));
+  HMM_Mat4 view_proj = HMM_MulM4(proj, view);
+  HMM_Mat4 model = vd__identity4;
+  vs_params.vp = HMM_MulM4(view_proj, model);
+
+  sg_pass_action pass_action = {
+    .colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0.25f, 0.5f, 0.75f, 1.0f}}};
+  sg_begin_default_pass(&pass_action, (int)w, (int)h);
+  // sg_apply_pipeline(vd__state.dbg.draw.pip);
+  // sg_apply_bindings(&vd__state.dbg.draw.bind);
+
+  sg_apply_pipeline(vd__state.dbg.draw.pip);
+
+  sg_apply_bindings(&(sg_bindings){.vertex_buffers[0] = vd__state.dbg.draw.vtx_buf,
+                                   .vertex_buffers[1] = vd__state.dbg.draw.transform.buf,
+                                   .vertex_buffer_offsets[1] = vd__state.dbg.draw.transform.offset,
+                                   .index_buffer = vd__state.dbg.draw.idx_buf});
+
+  sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(vs_params));
+  sg_draw(vd__state.dbg.draw.shapes[VD__BOX].draw.base_element, vd__state.dbg.draw.shapes[VD__BOX].draw.num_elements,
+          1);
+  sg_end_pass();
+  sg_commit();
+}
+
+void vd__dbg_draw_init()
+{
+  /* create shader */
+  vd__state.dbg.draw.shd = sg_make_shader(shapes_shader_desc(sg_query_backend()));
+
+  /* create pipeline object */
+  vd__state.dbg.draw.pip = sg_make_pipeline(&(sg_pipeline_desc){
+    .shader = vd__state.dbg.draw.shd,
+    .layout = {.buffers = {[0] = sshape_vertex_buffer_layout_state(),
+                           [1] = {.stride = sizeof(HMM_Mat4), .step_func = SG_VERTEXSTEP_PER_INSTANCE}},
+               .attrs = {[0] = sshape_position_vertex_attr_state(),
+                         [1] = sshape_normal_vertex_attr_state(),
+                         [2] = sshape_texcoord_vertex_attr_state(),
+                         [3] = sshape_color_vertex_attr_state(),
+                         [4] = {.buffer_index = 1, .offset = 0, .format = SG_VERTEXFORMAT_FLOAT4},
+                         [5] = {.buffer_index = 1, .offset = 0, .format = SG_VERTEXFORMAT_FLOAT4},
+                         [6] = {.buffer_index = 1, .offset = 0, .format = SG_VERTEXFORMAT_FLOAT4},
+                         [7] = {.buffer_index = 1, .offset = 0, .format = SG_VERTEXFORMAT_FLOAT4}}},
+    .index_type = SG_INDEXTYPE_UINT16,
+    .cull_mode = SG_CULLMODE_NONE,
+    .depth = {.compare = SG_COMPAREFUNC_LESS_EQUAL, .write_enabled = true},
+  });
+
+  sshape_vertex_t vertices[6 * 1024];
+  uint16_t indices[16 * 1024];
+  sshape_buffer_t buf = {
+    .vertices.buffer = SSHAPE_RANGE(vertices),
+    .indices.buffer = SSHAPE_RANGE(indices),
+  };
+  buf = sshape_build_box(&buf, &(sshape_box_t){
+                                 .width = 1.0f,
+                                 .height = 1.0f,
+                                 .depth = 1.0f,
+                                 .tiles = 1,
+                                 .random_colors = true,
+                               });
+  vd__state.dbg.draw.shapes[VD__BOX].draw = sshape_element_range(&buf);
+  buf = sshape_build_plane(&buf, &(sshape_plane_t){
+                                   .width = 1.0f,
+                                   .depth = 1.0f,
+                                   .tiles = 10,
+                                   .random_colors = true,
+                                 });
+  vd__state.dbg.draw.shapes[VD__PLANE].draw = sshape_element_range(&buf);
+  buf = sshape_build_sphere(&buf, &(sshape_sphere_t){
+                                    .radius = 0.75f,
+                                    .slices = 36,
+                                    .stacks = 20,
+                                    .random_colors = true,
+                                  });
+  vd__state.dbg.draw.shapes[VD__SPHERE].draw = sshape_element_range(&buf);
+  buf = sshape_build_cylinder(&buf, &(sshape_cylinder_t){
+                                      .radius = 0.5f,
+                                      .height = 1.5f,
+                                      .slices = 36,
+                                      .stacks = 10,
+                                      .random_colors = true,
+                                    });
+  vd__state.dbg.draw.shapes[VD__CYLINDER].draw = sshape_element_range(&buf);
+  buf = sshape_build_torus(&buf, &(sshape_torus_t){
+                                   .radius = 0.5f,
+                                   .ring_radius = 0.3f,
+                                   .rings = 36,
+                                   .sides = 18,
+                                   .random_colors = true,
+                                 });
+  vd__state.dbg.draw.shapes[VD__TORUS].draw = sshape_element_range(&buf);
+  assert(buf.valid);
+
+  // one vertex/index-buffer-pair for all shapes
+  const sg_buffer_desc vbuf_desc = sshape_vertex_buffer_desc(&buf);
+  const sg_buffer_desc ibuf_desc = sshape_index_buffer_desc(&buf);
+  vd__state.dbg.draw.vtx_buf = sg_make_buffer(&vbuf_desc);
+  vd__state.dbg.draw.idx_buf = sg_make_buffer(&ibuf_desc);
+}
+
 //    ___   ___  ___
 //   / _ | / _ \/ _ \
 //  / __ |/ ___/ ___/
@@ -563,7 +555,17 @@ void vd__gfx_init()
 //
 // >>app
 
-JanetSignal _vd_app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const Janet *argv, Janet *out,
+static Janet cfun_vd_app_width(int32_t argc, Janet *argv)
+{
+  return janet_wrap_integer(sapp_width());
+}
+
+static Janet cfun_vd_app_height(int32_t argc, Janet *argv)
+{
+  return janet_wrap_integer(sapp_height());
+}
+
+JanetSignal vd__app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const Janet *argv, Janet *out,
                                          JanetFiber **f)
 {
   JanetFiber *fiber;
@@ -594,7 +596,7 @@ void vd__app_init(void)
 
   Janet ret;
   JanetSignal status =
-    _vd_app_janet_pcall_keep_env(vd__state.app.mod_init_cb, 0, NULL, &ret, &vd__state.app.main_fiber);
+    vd__app_janet_pcall_keep_env(vd__state.app.mod_init_cb, 0, NULL, &ret, &vd__state.app.main_fiber);
   if (status == JANET_SIGNAL_ERROR)
   {
     printf("error loading game\n");
@@ -603,13 +605,28 @@ void vd__app_init(void)
   }
 }
 
-void vd__app_update(void)
+void vd__app_event(const sapp_event *ev)
 {
-  vd__dbg_draw_cube();
+  Janet evv = janet_wrap_abstract(ev);
 
   Janet ret;
   JanetSignal status =
-    _vd_app_janet_pcall_keep_env(vd__state.app.mod_update_cb, 0, NULL, &ret, &vd__state.app.main_fiber);
+    vd__app_janet_pcall_keep_env(vd__state.app.mod_event_cb, 1, &evv, &ret, &vd__state.app.main_fiber);
+  if (status == JANET_SIGNAL_ERROR)
+  {
+    printf("error calling app event handler\n");
+    janet_stacktrace(vd__state.app.main_fiber, ret);
+    sapp_quit();
+  }
+}
+
+void vd__app_update(void)
+{
+  vd__dbg_draw_cube(HMM_V3(0.0f, 0.0, 0.0f));
+
+  Janet ret;
+  JanetSignal status =
+    vd__app_janet_pcall_keep_env(vd__state.app.mod_update_cb, 0, NULL, &ret, &vd__state.app.main_fiber);
   if (status == JANET_SIGNAL_ERROR)
   {
     printf("error loading game\n");
@@ -623,25 +640,6 @@ void vd__app_shutdown(void)
   sg_shutdown();
   sargs_shutdown();
 }
-
-static void vd__janet_cdefs(JanetTable *env)
-{
-  janet_def(env, "ecs/on-update", janet_wrap_integer(EcsOnUpdate), "(voodoo/ecs/on-update)\n\nEcsOnUpdate");
-}
-
-static const JanetReg vd__cfuns[] = {
-  {"ecs/create-world", vd__ecs_create_world, "(voodoo/ecs/create-world)\n\nCreate a new world."},
-  {"ecs/component", vd__ecs_component, "(voodoo/ecs/component)\n\nDefine a new component."},
-  {"ecs/prefab", vd__ecs_prefab, "(voodoo/ecs/prefab)\n\nDefine a new prefab."},
-  //     // {"ecs/field", vecs_field, "(voodoo/ecs/field)\n\nTODO."},
-  {"ecs/new-id", vd__ecs_new_id, "(voodoo/ecs/new-id)\n\nCreate a new entity id."},
-  {"ecs/update", vd__ecs_update,
-   "(voodoo/ecs/update)\n\nUpdate a world by running systems against"
-   "matching entities."},
-  {"ecs/set", vd__ecs_set, "(voodoo/ecs/set)\n\nSet the value of a component."},
-  {"ecs/system", vd__ecs_system, "(voodoo/ecs/system)\n\nDefines a new system."},
-  {"ecs/destroy-world", vd__ecs_destroy_world, "(voodoo/ecs/destroy-world)\n\nDestroy a world."},
-  {NULL, NULL, NULL}};
 
 sapp_desc sokol_main(int argc, char *argv[])
 {
@@ -684,14 +682,17 @@ sapp_desc sokol_main(int argc, char *argv[])
 
   JanetTable *cfg = janet_unwrap_table(ret);
   vd__state.app.mod_init_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("init")));
+  vd__state.app.mod_event_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("event")));
   vd__state.app.mod_update_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("update")));
   vd__state.app.mod_shutdown_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("shutdown")));
   janet_gcroot(janet_wrap_function(vd__state.app.mod_init_cb));
+  janet_gcroot(janet_wrap_function(vd__state.app.mod_event_cb));
   janet_gcroot(janet_wrap_function(vd__state.app.mod_update_cb));
   janet_gcroot(janet_wrap_function(vd__state.app.mod_shutdown_cb));
 
   return (sapp_desc){
     .init_cb = vd__app_init,
+    .event_cb = vd__app_event,
     .frame_cb = vd__app_update,
     .cleanup_cb = vd__app_shutdown,
     .width = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("width"))),
