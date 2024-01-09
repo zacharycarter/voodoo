@@ -42,6 +42,8 @@ static Janet cfun_vd_app_height(int32_t argc, Janet *argv);
 static Janet cfun_vd_cam_new(int32_t argc, Janet *argv);
 static Janet cfun_vd_cam_handle_event(int32_t argc, Janet *argv);
 static Janet cfun_vd_cam_update(int32_t argc, Janet *argv);
+static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv);
+static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv);
 
 static void vd__janet_cdefs(JanetTable *env)
 {
@@ -54,6 +56,9 @@ static const JanetReg vd__cfuns[] = {
   {"cam/handle-event", cfun_vd_cam_handle_event,
    "(voodoo/cam/handle-event)\n\nHandle an event with an existing camera."},
   {"cam/update", cfun_vd_cam_update, "(voodoo/cam/update)\n\nUpdate an existing camera."},
+  {"dbg/draw/camera", cfun_vd_dbg_draw_camera,
+   "(voodoo/dbg/draw/camera)\n\nSet camera matricies for debug draw operations."},
+  {"dbg/draw/cube", cfun_vd_dbg_draw_cube, "(voodoo/dbg/draw/cube)\n\nDraw a debug cube."},
   {NULL, NULL, NULL}};
 
 #endif // VOODOO_INCLUDED
@@ -80,7 +85,6 @@ static const JanetReg vd__cfuns[] = {
 
 #define HANDMADE_MATH_IMPLEMENTATION
 #define HANDMADE_MATH_NO_SIMD
-#define HANDMADE_MATH_USE_DEGREES
 #include "hmm.h"
 #define SOKOL_IMPL
 #define SOKOL_WGPU
@@ -136,11 +140,13 @@ static struct
         sg_buffer buf;
         int offset;
       } transform;
+      HMM_Mat4 vp;
 
       sg_buffer idx_buf;
       sg_buffer vtx_buf;
       sg_shader shd;
       sg_pipeline pip;
+
       vd__dbg_shape shapes[VD__NUM_SHAPES];
 
     } draw;
@@ -231,7 +237,7 @@ typedef struct
   float nearz;
   float farz;
   HMM_Vec3 center;
-} vd__camera_desc_t;
+} vd__camera_desc;
 
 typedef struct
 {
@@ -250,18 +256,17 @@ typedef struct
   HMM_Mat4 view;
   HMM_Mat4 proj;
   HMM_Mat4 view_proj;
-} vd__camera_t;
+} vd__camera;
 
 static float vd__cam_def(float val, float def)
 {
   return ((val == 0.0f) ? def : val);
 }
 
-/* initialize to default parameters */
-static void vd__cam_init(vd__camera_t *cam, const vd__camera_desc_t *desc)
+static void vd__cam_init(vd__camera *cam, const vd__camera_desc *desc)
 {
   assert(cam && desc);
-  memset(cam, 0, sizeof(vd__camera_t));
+  memset(cam, 0, sizeof(vd__camera));
   cam->min_dist = vd__cam_def(desc->min_dist, CAMERA_DEFAULT_MIN_DIST);
   cam->max_dist = vd__cam_def(desc->max_dist, CAMERA_DEFAULT_MAX_DIST);
   cam->min_lat = vd__cam_def(desc->min_lat, CAMERA_DEFAULT_MIN_LAT);
@@ -273,10 +278,12 @@ static void vd__cam_init(vd__camera_t *cam, const vd__camera_desc_t *desc)
   cam->aspect = vd__cam_def(desc->aspect, CAMERA_DEFAULT_ASPECT);
   cam->nearz = vd__cam_def(desc->nearz, CAMERA_DEFAULT_NEARZ);
   cam->farz = vd__cam_def(desc->farz, CAMERA_DEFAULT_FARZ);
+  cam->view = HMM_M4D(1.0f);
+  cam->proj = HMM_M4D(1.0f);
+  cam->view_proj = HMM_M4D(1.0f);
 }
 
-/* feed mouse movement */
-static void vd__cam_orbit(vd__camera_t *cam, float dx, float dy)
+static void vd__cam_orbit(vd__camera *cam, float dx, float dy)
 {
   assert(cam);
   cam->longitude -= dx;
@@ -291,8 +298,7 @@ static void vd__cam_orbit(vd__camera_t *cam, float dx, float dy)
   cam->latitude = HMM_Clamp(cam->min_lat, cam->latitude + dy, cam->max_lat);
 }
 
-/* feed zoom (mouse wheel) input */
-static void vd__cam_zoom(vd__camera_t *cam, float d)
+static void vd__cam_zoom(vd__camera *cam, float d)
 {
   assert(cam);
   cam->distance = HMM_Clamp(cam->min_dist, cam->distance + d, cam->max_dist);
@@ -305,21 +311,19 @@ static HMM_Vec3 vd__cam_euclidean(float latitude, float longitude)
   return HMM_V3(cosf(lat) * sinf(lng), sinf(lat), cosf(lat) * cosf(lng));
 }
 
-/* update the view, proj and view_proj matrix */
-static void vd__cam_update(vd__camera_t *cam, int fb_width, int fb_height)
+static void vd__cam_update(vd__camera *cam, float fb_width, float fb_height)
 {
   assert(cam);
   assert((fb_width > 0) && (fb_height > 0));
-  const float w = (float)fb_width;
-  const float h = (float)fb_height;
+  const float w = fb_width;
+  const float h = fb_height;
   cam->eye_pos = HMM_AddV3(cam->center, HMM_MulV3F(vd__cam_euclidean(cam->latitude, cam->longitude), cam->distance));
   cam->view = HMM_LookAt_RH(cam->eye_pos, cam->center, HMM_V3(0.0f, 1.0f, 0.0f));
-  cam->proj = HMM_Perspective_RH_NO(cam->aspect, w / h, cam->nearz, cam->farz);
+  cam->proj = HMM_Perspective_RH_ZO(cam->aspect, w / h, cam->nearz, cam->farz);
   cam->view_proj = HMM_MulM4(cam->proj, cam->view);
 }
 
-/* handle sokol-app input events */
-static void vd__cam_handle_event(vd__camera_t *cam, const sapp_event *ev)
+static void vd__cam_handle_event(vd__camera *cam, const sapp_event *ev)
 {
   assert(cam);
   switch (ev->type)
@@ -377,9 +381,24 @@ static Janet cfun_vd_cam_update(int32_t argc, Janet *argv)
     janet_panic("expected camera");
   }
 
-  int fb_width = janet_checktype(argv[1], JANET_NUMBER) ? janet_unwrap_number(argv[1]) : sapp_width();
-  int fb_height = janet_checktype(argv[2], JANET_NUMBER) ? janet_unwrap_number(argv[2]) : sapp_height();
+  float fb_width, fb_height;
+  if (argc == 3 && janet_checktype(argv[1], JANET_NUMBER) && janet_checktype(argv[2], JANET_NUMBER))
+  {
+    fb_width = janet_unwrap_number(argv[1]);
+    fb_height = janet_unwrap_number(argv[2]);
+  }
+  else if (argc == 1)
+  {
+    fb_width = sapp_widthf();
+    fb_height = sapp_heightf();
+  }
+  else
+  {
+    janet_panic("expected numbers for width and height");
+  }
+
   vd__cam_update(janet_getabstract(argv, 0, &vd__cam_camera), fb_width, fb_height);
+
   return janet_wrap_nil();
 }
 
@@ -387,8 +406,8 @@ static Janet cfun_vd_cam_new(int32_t argc, Janet *argv)
 {
   janet_fixarity(argc, 1);
   JanetTable *desc = janet_gettable(argv, 0);
-  vd__camera_t *cam = janet_abstract(&vd__cam_camera, sizeof(vd__camera_t));
-  vd__cam_init(cam, &(vd__camera_desc_t){
+  vd__camera *cam = janet_abstract(&vd__cam_camera, sizeof(vd__camera));
+  vd__cam_init(cam, &(vd__camera_desc){
                       .min_dist = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("min-dist"))),
                       .max_dist = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("max-dist"))),
                       .center = vd__unwrap_vec3(janet_table_rawget(desc, janet_ckeywordv("center"))),
@@ -411,11 +430,7 @@ sg_buffer vd__gfx_buffer_append(sg_buffer buf, size_t size, const void *data, in
   if (buf.id == SG_INVALID_ID || sg_query_buffer_will_overflow(buf, size))
   {
     sg_buffer_info bi = sg_query_buffer_info(buf);
-    buf = sg_make_buffer(&(sg_buffer_desc){
-      .size = bi.append_pos + size,
-      .usage = SG_USAGE_STREAM,
-      .type = SG_BUFFERTYPE_VERTEXBUFFER,
-    });
+    buf = sg_make_buffer(&(sg_buffer_desc){.size = bi.append_pos + size, .usage = SG_USAGE_STREAM});
   }
   *offset = sg_append_buffer(buf, &(sg_range){.ptr = data, .size = size});
   return buf;
@@ -435,28 +450,28 @@ void vd__gfx_init()
 // /____/___/____/\____/\___/ /____/_/|_/_/ |_|__/|__/
 //
 // >debugdraw
+
 void vd__dbg_draw_cube(HMM_Vec3 pos)
 {
   HMM_Mat4 transform = HMM_Translate(pos);
   vd__state.dbg.draw.transform.buf = vd__gfx_buffer_append(vd__state.dbg.draw.transform.buf, sizeof(HMM_Mat4),
                                                            &transform, &vd__state.dbg.draw.transform.offset);
+}
 
+void vd__dbg_draw_camera(vd__camera *cam)
+{
+  vd__state.dbg.draw.vp = cam->view_proj;
+}
+
+void vd__dbg_draw()
+{
   /* NOTE: the vs_params_t struct has been code-generated by the shader-code-gen */
   vs_params_t vs_params;
-  const float w = sapp_widthf();
-  const float h = sapp_heightf();
-  const float t = (float)(sapp_frame_duration() * 60.0);
-  HMM_Mat4 proj = HMM_Perspective_RH_NO(60.0f, w / h, 0.01f, 10.0f);
-  HMM_Mat4 view = HMM_LookAt_RH(HMM_V3(0.0f, 1.5f, 6.0f), HMM_V3(0.0f, 0.0f, 0.0f), HMM_V3(0.0f, 1.0f, 0.0f));
-  HMM_Mat4 view_proj = HMM_MulM4(proj, view);
-  HMM_Mat4 model = vd__identity4;
-  vs_params.vp = HMM_MulM4(view_proj, model);
+  vs_params.vp = vd__state.dbg.draw.vp;
 
   sg_pass_action pass_action = {
-    .colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0.25f, 0.5f, 0.75f, 1.0f}}};
-  sg_begin_default_pass(&pass_action, (int)w, (int)h);
-  // sg_apply_pipeline(vd__state.dbg.draw.pip);
-  // sg_apply_bindings(&vd__state.dbg.draw.bind);
+    .colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0.13f, 0.13f, 0.13f, 1.0f}}};
+  sg_begin_default_pass(&pass_action, sapp_width(), sapp_height());
 
   sg_apply_pipeline(vd__state.dbg.draw.pip);
 
@@ -487,9 +502,9 @@ void vd__dbg_draw_init()
                          [2] = sshape_texcoord_vertex_attr_state(),
                          [3] = sshape_color_vertex_attr_state(),
                          [4] = {.buffer_index = 1, .offset = 0, .format = SG_VERTEXFORMAT_FLOAT4},
-                         [5] = {.buffer_index = 1, .offset = 0, .format = SG_VERTEXFORMAT_FLOAT4},
-                         [6] = {.buffer_index = 1, .offset = 0, .format = SG_VERTEXFORMAT_FLOAT4},
-                         [7] = {.buffer_index = 1, .offset = 0, .format = SG_VERTEXFORMAT_FLOAT4}}},
+                         [5] = {.buffer_index = 1, .offset = 16, .format = SG_VERTEXFORMAT_FLOAT4},
+                         [6] = {.buffer_index = 1, .offset = 32, .format = SG_VERTEXFORMAT_FLOAT4},
+                         [7] = {.buffer_index = 1, .offset = 48, .format = SG_VERTEXFORMAT_FLOAT4}}},
     .index_type = SG_INDEXTYPE_UINT16,
     .cull_mode = SG_CULLMODE_NONE,
     .depth = {.compare = SG_COMPAREFUNC_LESS_EQUAL, .write_enabled = true},
@@ -505,7 +520,7 @@ void vd__dbg_draw_init()
                                  .width = 1.0f,
                                  .height = 1.0f,
                                  .depth = 1.0f,
-                                 .tiles = 1,
+                                 .tiles = 10,
                                  .random_colors = true,
                                });
   vd__state.dbg.draw.shapes[VD__BOX].draw = sshape_element_range(&buf);
@@ -546,6 +561,26 @@ void vd__dbg_draw_init()
   const sg_buffer_desc ibuf_desc = sshape_index_buffer_desc(&buf);
   vd__state.dbg.draw.vtx_buf = sg_make_buffer(&vbuf_desc);
   vd__state.dbg.draw.idx_buf = sg_make_buffer(&ibuf_desc);
+}
+
+static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv)
+{
+  janet_fixarity(argc, 1);
+
+  if (!janet_checktype(argv[0], JANET_ABSTRACT))
+  {
+    janet_panic("expected camera");
+  }
+
+  vd__dbg_draw_camera(janet_getabstract(argv, 0, &vd__cam_camera));
+  return janet_wrap_nil();
+}
+
+static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv)
+{
+  janet_fixarity(argc, 1);
+  vd__dbg_draw_cube(vd__unwrap_vec3(argv[0]));
+  return janet_wrap_nil();
 }
 
 //    ___   ___  ___
@@ -622,8 +657,6 @@ void vd__app_event(const sapp_event *ev)
 
 void vd__app_update(void)
 {
-  vd__dbg_draw_cube(HMM_V3(0.0f, 0.0, 0.0f));
-
   Janet ret;
   JanetSignal status =
     vd__app_janet_pcall_keep_env(vd__state.app.mod_update_cb, 0, NULL, &ret, &vd__state.app.main_fiber);
@@ -633,6 +666,8 @@ void vd__app_update(void)
     janet_stacktrace(vd__state.app.main_fiber, ret);
     sapp_quit();
   }
+
+  vd__dbg_draw();
 }
 
 void vd__app_shutdown(void)
