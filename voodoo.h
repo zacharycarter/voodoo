@@ -44,6 +44,7 @@ static Janet cfun_vd_cam_handle_event(int32_t argc, Janet *argv);
 static Janet cfun_vd_cam_update(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv);
+static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv);
 
 static void vd__janet_cdefs(JanetTable *env)
 {
@@ -59,6 +60,7 @@ static const JanetReg vd__cfuns[] = {
   {"dbg/draw/camera", cfun_vd_dbg_draw_camera,
    "(voodoo/dbg/draw/camera)\n\nSet camera matricies for debug draw operations."},
   {"dbg/draw/cube", cfun_vd_dbg_draw_cube, "(voodoo/dbg/draw/cube)\n\nDraw a debug cube."},
+  {"dbg/draw/grid", cfun_vd_dbg_draw_grid, "(voodoo/dbg/draw/grid)\n\nDraw a debug grid."},
   {NULL, NULL, NULL}};
 
 #endif // VOODOO_INCLUDED
@@ -91,6 +93,7 @@ static const JanetReg vd__cfuns[] = {
 #include "sokol_app.h"
 #include "sokol_args.h"
 #include "sokol_gfx.h"
+#include "sokol_gl.h"
 #include "sokol_glue.h"
 #include "sokol_log.h"
 #include "sokol_shape.h"
@@ -220,7 +223,7 @@ static const JanetAbstractType vd__cam_event = {"voodoo/cam/event", JANET_ATEND_
 #define CAMERA_DEFAULT_MIN_LAT (-85.0f)
 #define CAMERA_DEFAULT_MAX_LAT (85.0f)
 #define CAMERA_DEFAULT_DIST (5.0f)
-#define CAMERA_DEFAULT_ASPECT (60.0f)
+#define CAMERA_DEFAULT_ASPECT (vd__pi_div2)
 #define CAMERA_DEFAULT_NEARZ (0.01f)
 #define CAMERA_DEFAULT_FARZ (100.0f)
 
@@ -442,6 +445,16 @@ void vd__gfx_init()
     .context = sapp_sgcontext(),
     .logger.func = slog_func,
   });
+
+  sgl_setup(&(sgl_desc_t){
+    .logger.func = slog_func,
+  });
+}
+
+void vd__gfx_shutdown()
+{
+  sgl_shutdown();
+  sg_shutdown();
 }
 
 //    ___  _______  __  _______  ___  ___  ___ _      __
@@ -449,7 +462,45 @@ void vd__gfx_init()
 //  / // / _// _  / /_/ / (_ / / // / , _/ __ | |/ |/ /
 // /____/___/____/\____/\___/ /____/_/|_/_/ |_|__/|__/
 //
-// >debugdraw
+// >>dbg
+
+void vd__dbg__draw_ground(float scale)
+{
+  sgl_c3f(1.0f, 1.0f, 1.0f);
+  sgl_begin_lines();
+  for (float i = -scale, c = 0; c <= 20; c += 20, i += c * (scale / 10))
+  {
+    sgl_v3f(-scale, 0, i);
+    sgl_v3f(+scale, 0, i);
+    sgl_v3f(i, 0, -scale);
+    sgl_v3f(i, 0, +scale);
+  }
+  sgl_c3f(0.5843f, 0.5843f, 0.5843f);
+  for (float i = -scale + scale / 10, c = 1; c < 20; ++c, i += (scale / 10))
+  {
+    sgl_v3f(-scale, 0, i);
+    sgl_v3f(+scale, 0, i);
+    sgl_v3f(i, 0, -scale);
+    sgl_v3f(i, 0, +scale);
+  }
+  sgl_end();
+}
+
+void vd__dbg_draw_ground(float scale)
+{
+  if (scale)
+  {
+    vd__dbg__draw_ground(scale);
+  }
+  else
+  {
+    vd__dbg__draw_ground(100.0f);
+    vd__dbg__draw_ground(10.0f);
+    vd__dbg__draw_ground(1.0f);
+    vd__dbg__draw_ground(01.0f);
+    vd__dbg__draw_ground(001.0f);
+  }
+}
 
 void vd__dbg_draw_cube(HMM_Vec3 pos)
 {
@@ -469,6 +520,8 @@ void vd__dbg_draw()
   vs_params_t vs_params;
   vs_params.vp = vd__state.dbg.draw.vp;
 
+  sgl_load_matrix(&vd__state.dbg.draw.vp.Elements[0][0]);
+
   sg_pass_action pass_action = {
     .colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0.13f, 0.13f, 0.13f, 1.0f}}};
   sg_begin_default_pass(&pass_action, sapp_width(), sapp_height());
@@ -483,6 +536,7 @@ void vd__dbg_draw()
   sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(vs_params));
   sg_draw(vd__state.dbg.draw.shapes[VD__BOX].draw.base_element, vd__state.dbg.draw.shapes[VD__BOX].draw.num_elements,
           1);
+  sgl_draw();
   sg_end_pass();
   sg_commit();
 }
@@ -583,6 +637,20 @@ static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv)
   return janet_wrap_nil();
 }
 
+static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv)
+{
+  janet_fixarity(argc, 1);
+
+  if (!janet_checktype(argv[0], JANET_NUMBER))
+  {
+    janet_panicf("expected number, got %v", argv[0]);
+  }
+
+  vd__dbg_draw_ground(janet_unwrap_number(argv[0]));
+
+  return janet_wrap_nil();
+}
+
 //    ___   ___  ___
 //   / _ | / _ \/ _ \
 //  / __ |/ ___/ ___/
@@ -672,7 +740,7 @@ void vd__app_update(void)
 
 void vd__app_shutdown(void)
 {
-  sg_shutdown();
+  vd__gfx_shutdown();
   sargs_shutdown();
 }
 

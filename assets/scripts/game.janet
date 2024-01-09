@@ -5,8 +5,8 @@
                                   :max-dist 100.0
                                   :center @[0.0 0.0 0.0]
                                   :distance 5.0
-                                  :latitude 0.0
-                                  :longitude 0.0})))
+                                  :latitude 45.0
+                                  :longitude 45.0})))
 
 (defn event [e]
   (cam/handle-event (state :camera) e))
@@ -14,7 +14,8 @@
 (defn update []
   (cam/update (state :camera))
   (dbg/draw/camera (state :camera))
-  (dbg/draw/cube @[0.0 0.0 0.0]))
+  (dbg/draw/grid 0)
+  (dbg/draw/cube @[0.0 0.5 0.0]))
 
 (defn shutdown [])
 
