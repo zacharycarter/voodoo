@@ -746,6 +746,8 @@ void vd__app_shutdown(void)
 
 sapp_desc sokol_main(int argc, char *argv[])
 {
+  EM_ASM({ console.log(FS.readFile("assets/scripts/game.janet", {encoding : "utf8"})); });
+
   sargs_setup(&(sargs_desc){.argc = argc, .argv = argv});
 
   const char *mod = NULL, *err = NULL;

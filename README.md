@@ -42,7 +42,5 @@ This is very much WIP.
     :shutdown shutdown})
 ```
 
-
-
 ## License
 Voodoo is licensed under the MIT License.
