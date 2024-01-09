@@ -6,7 +6,7 @@ Voodoo is focused on creating games for the browser.
 
 This is very much WIP.
 
-## Example
+## [Example](https://github.com/zacharycarter/voodoo/blob/master/assets/scripts/game.janet)
 
 ![assets/scripts/game.janet](https://github.com/zacharycarter/voodoo/blob/master/screenshots/ss0.png?raw=true)
 
