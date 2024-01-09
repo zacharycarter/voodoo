@@ -18,7 +18,7 @@ This is very much WIP.
 
 (defn init []
   (set (state :camera) (cam/new @{:min-dist 1.0
-                                  :max-dist 100.0
+                                  :max-dist 2000.0
                                   :center @[0.0 0.0 0.0]
                                   :distance 5.0
                                   :latitude 45.0

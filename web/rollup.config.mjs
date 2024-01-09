@@ -4,9 +4,9 @@ import tailwindcss from "tailwindcss";
 import autoprefixer from "autoprefixer";
 
 export default {
-  input: "./src/js/index.js",
+  input: "./web/src/js/index.js",
   output: {
-    file: "./dist/voodoo.bundle.js",
+    file: "./web/dist/voodoo.bundle.js",
     format: "iife",
     name: "voodoo",
   },
@@ -15,7 +15,7 @@ export default {
     postcss({
       plugins: [
         tailwindcss({
-          content: ["./index.html"],
+          content: ["./web/index.html"],
           theme: {
             extend: {},
           },
