@@ -1,0 +1,22 @@
+{
+  "name": "voodoo",
+  "version": "1.0.0",
+  "main": "index.js",
+  "repository": "git@github.com:zacharycarter/voodoo.git",
+  "author": "Zachary Carter <carterza@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "@codemirror/lang-javascript": "^6.2.1",
+    "@rollup/plugin-node-resolve": "^15.2.3",
+    "codemirror": "^6.0.1",
+    "codemirror-lang-janet": "^0.7.2"
+  },
+  "devDependencies": {
+    "autoprefixer": "^10.4.16",
+    "jquery": "^3.7.1",
+    "postcss": "^8.4.33",
+    "postcss-modules": "^6.0.0",
+    "rollup-plugin-postcss": "^4.0.2",
+    "tailwindcss": "^3.4.1"
+  }
+}

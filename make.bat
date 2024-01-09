@@ -48,7 +48,7 @@ fi
 
 # python3 -m http.server --bind 127.0.0.1 8888 1>/dev/null 2>/dev/null &
 # server.py 8888 1>/dev/null 2>/dev/null &
-emcc $@ -g -gsource-map -I./src/voodoo -I./thirdparty/c89atomic -I./thirdparty/janet -I./thirdparty/sokol -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I./thirdparty/cj5 -I./thirdparty/sort -I./thirdparty/hmm -I./thirdparty/dds-ktx -I./thirdparty/stb -o index.html -s USE_WEBGPU=1 -s PRECISE_F32=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -s ENVIRONMENT=worker,web --shell-file shell.html -Wfatal-errors --preload-file ./data -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 -s ASSERTIONS=1 -s ASYNCIFY=1 && "${SRV_CMD[@]}" http://localhost:9999
+emcc $@ -g -gsource-map -I./src/voodoo -I./thirdparty/c89atomic -I./thirdparty/janet -I./thirdparty/sokol -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I./thirdparty/cj5 -I./thirdparty/sort -I./thirdparty/hmm -I./thirdparty/dds-ktx -I./thirdparty/stb -o index.html -s USE_WEBGPU=1 -s PRECISE_F32=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -s ENVIRONMENT=worker,web --shell-file web/voodoo.html -Wfatal-errors --preload-file ./data -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 -s ASSERTIONS=1 -s ASYNCIFY=1 && "${SRV_CMD[@]}" http://localhost:9999
 
 exit
 
@@ -74,18 +74,22 @@ rem cook art
 @REM copy /y .art[00].zip index.zip
 @REM copy /y template.js index.coi.js
 
-rem host webserver:8000 if not open
-netstat /ano | find /i "listening" | find ":8000" >nul 2>nul && (
-	rem start python -m http.server --bind 127.0.0.1 8000
-) || (
-	@REM start python -m http.server --bind 127.0.0.1 8000
-	start python .\server.py 9999
-)
+@REM rem host webserver:8000 if not open
+@REM netstat /ano | find /i "listening" | find ":8000" >nul 2>nul && (
+@REM 	rem start python -m http.server --bind 127.0.0.1 8000
+@REM ) || (
+@REM 	@REM start python -m http.server --bind 127.0.0.1 8000
+@REM 	start python .\server.py 9999
+@REM )
 
-rem compile shaders
+@REM compile shaders
 .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\shapes.glsl -o .\assets\shaders\wgsl\shapes.glsl.h -l wgsl -r
 
-rem compile and launch
+
+@REM compile and launch
 @REM emcc %* -g -O0 -I.\shaders\wgsl -I.\thirdparty -I.\thirdparty\c89atomic -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\flecs -I.\thirdparty\sx\include -I.\thirdparty\stackwalkerc -I.\thirdparty\cj5 -I.\thirdparty\sort -I.\thirdparty\hmm -I.\thirdparty\dds-ktx -I.\thirdparty\stb -I.\thirdparty\cdbgui -o index.html -s USE_WEBGPU=1 -s PRECISE_F32=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -s ENVIRONMENT=worker,web --shell-file shell.html -Wfatal-errors --preload-file .\data -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 -s ASSERTIONS=1 -s ASYNCIFY=1 && start "" http://localhost:9999
 @REM emcc %* -g -O0 -I.\shaders\wgsl -I.\thirdparty -I.\thirdparty\c89atomic -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\flecs -I.\thirdparty\sx\include -I.\thirdparty\stackwalkerc -I.\thirdparty\cj5 -I.\thirdparty\sort -I.\thirdparty\hmm -I.\thirdparty\dds-ktx -I.\thirdparty\stb -I.\thirdparty\cdbgui -o index.html -s USE_WEBGPU=1 -s PRECISE_F32=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -s ENVIRONMENT=worker,web --shell-file shell.html -Wfatal-errors -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 -s ASSERTIONS=1 -s ASYNCIFY=1 && start "" http://localhost:9999
-emcc %* -g -O0 -DUSE_DBG_UI -I.\assets\shaders\wgsl -I.\thirdparty -I.\thirdparty\hmm -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\tinyfiledialogs -I.\thirdparty\zpl\code -o index.html -s USE_WEBGPU=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb --shell-file shell.html -Wfatal-errors --preload-file .\assets -s ALLOW_MEMORY_GROWTH=1 -s ASSERTIONS=1 -lidbfs.js && start "" http://localhost:9999
+emcc %* -g -O0 -DUSE_DBG_UI -I.\assets\shaders\wgsl -I.\thirdparty -I.\thirdparty\hmm -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\tinyfiledialogs -I.\thirdparty\zpl\code -o .\web\src\js\voodoo.js -s USE_WEBGPU=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -Wfatal-errors --preload-file .\assets -s ALLOW_MEMORY_GROWTH=1 -s ASSERTIONS=1 -s SINGLE_FILE=1 -s MODULARIZE=1 -s EXPORT_ES6 -s EXPORT_NAME="'Voodoo'" -s EXPORTED_RUNTIME_METHODS=["FS"] -lidbfs.js
+
+@REM build web artifacts
+@REM type .\web\src\js\voodoo.js .\web\src\js\index.js > .\web\public\js\voodoo.js && rollup -c .\web\rollup.config.mjs
