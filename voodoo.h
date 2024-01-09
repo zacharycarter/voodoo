@@ -37,6 +37,8 @@
 
 #include "janet.h"
 
+extern void jsfun_vd_app_update(void);
+
 static Janet cfun_vd_app_width(int32_t argc, Janet *argv);
 static Janet cfun_vd_app_height(int32_t argc, Janet *argv);
 static Janet cfun_vd_cam_new(int32_t argc, Janet *argv);
@@ -725,6 +727,8 @@ void vd__app_event(const sapp_event *ev)
 
 void vd__app_update(void)
 {
+  jsfun_vd_app_update();
+
   Janet ret;
   JanetSignal status =
     vd__app_janet_pcall_keep_env(vd__state.app.mod_update_cb, 0, NULL, &ret, &vd__state.app.main_fiber);

@@ -1,4 +1,5 @@
-# Voodoo
+# voodoo
+![voodoo](https://github.com/zacharycarter/voodoo/blob/master/screenshots/voodoo.png?raw=true)
 
 Voodoo is a 3D game programming library written in C.
 
