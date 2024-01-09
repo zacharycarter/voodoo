@@ -2,6 +2,8 @@
 
 Voodoo is a 3D game programming library written in C.
 
+Voodoo is meant to be called from [Janet](https://janet-lang.org/) scripts.
+
 Voodoo is focused on creating games for the browser.
 
 This is very much WIP.
