@@ -1,11 +1,11 @@
 # voodoo
 ![voodoo](https://github.com/zacharycarter/voodoo/blob/master/screenshots/voodoo.png?raw=true)
 
-Voodoo is a 3D game programming library written in C.
+voodoo is a 3D game programming library written in C.
 
-Voodoo exposes an API that is intended to be invoked via scripts written in [Janet](https://janet-lang.org/).
+voodoo exposes an API that is intended to be invoked via scripts written in [Janet](https://janet-lang.org/).
 
-Voodoo is focused on creating games for the browser.
+voodoo is focused on creating games for the browser.
 
 This is very much WIP.
 
@@ -46,4 +46,4 @@ This is very much WIP.
 ```
 
 ## License
-Voodoo is licensed under the MIT License.
+voodoo is licensed under the MIT License.
