@@ -727,7 +727,8 @@ void vd__app_event(const sapp_event *ev)
 
 void vd__app_update(void)
 {
-  jsfun_vd_app_update();
+  // jsfun_vd_app_update();
+  // EM_ASM({ console.log(Module.Signal.get(Module.signals.scriptDirty)); });
 
   Janet ret;
   JanetSignal status =

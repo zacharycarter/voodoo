@@ -1,8 +1,6 @@
 node_modules
 .voodoo
-index.data
-index.html
-index.js
-index.wasm
 assets/shaders/wgsl
-editor.bundle.js
+web/dist
+web/src/js/voodoo.js
+web/src/js/voodoo.data

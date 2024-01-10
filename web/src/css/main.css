@@ -51,6 +51,15 @@ body {
     height: 100%;
 }
 
+.cm-content {
+  font-family: var(--monospace-family);
+  font-size: var(--monospace-size);
+}
+
+html {
+  height: 100%;
+}
+
 code {
   white-space: pre;
   font-family: var(--monospace-family);
