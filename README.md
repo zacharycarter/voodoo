@@ -9,6 +9,9 @@ voodoo is focused on creating games for the browser.
 
 This is very much WIP.
 
+## Video demonstration
+![assets/scripts/game.janet](https://github.com/zacharycarter/voodoo/blob/master/screenshots/v0.mp4?raw=true)
+
 ## [Example](https://github.com/zacharycarter/voodoo/blob/master/assets/scripts/game.janet)
 
 ![assets/scripts/game.janet](https://github.com/zacharycarter/voodoo/blob/master/screenshots/ss0.png?raw=true)

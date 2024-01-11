@@ -142,31 +142,58 @@ const theme = EditorView.theme({
   // TODO: style the "find/replace" box
 });
 
-Voodoo().then((VD) => {
-  VD.Signal = Signal;
-  VD.signals = {
-    scriptDirty: Signal.create(true),
-  };
+const keyBindings = [indentWithTab, ...defaultKeymap];
+const parent = document.getElementById("vd-editor");
+const signals = {
+  scriptDirty: Signal.create(false),
+};
 
-  const keyBindings = [indentWithTab, ...defaultKeymap];
-  const parent = document.getElementById("vd-editor");
-  let editor = new EditorView({
-    extensions: [
-      basicSetup,
-      janet(),
-      keymap.of(keyBindings),
-      EditorView.updateListener.of(function (viewUpdate) {
-        if (viewUpdate.docChanged) {
-          Signal.set(VD.signals.scriptDirty, true);
-        }
-      }),
-      theme,
-      syntaxHighlighting(highlightStyle),
-    ],
-    parent,
-    doc: VD.FS.readFile("assets/scripts/game.janet", { encoding: "utf8" }),
-  });
+const Module = {
+  get_signal: Signal.get,
+  set_signal: Signal.set,
+  signals: signals,
+  preInit: () => {
+    Module.FS.mkdir("/voodoo");
+    Module.FS.mount(Module.FS.filesystems.IDBFS, {}, "/voodoo");
+    // Module.FS.writeFile("/voodoo/game.janet", "(print \"hello world\")", { encoding: "utf8" });
+  },
+  preRun: [
+    () => {
+      const entryScriptSrc = Module.FS.readFile("/assets/scripts/game.janet", { encoding: "utf8" });
+      const entryScriptSrcBuf = new TextEncoder("utf-8").encode(entryScriptSrc);
+      const entryScriptFile = Module.FS.open("/voodoo/game.janet", "w+");
+      Module.FS.write(entryScriptFile, entryScriptSrcBuf, 0, entryScriptSrcBuf.length, 0);
+      Module.FS.close(entryScriptFile);
 
+      Module.editor = new EditorView({
+        extensions: [
+          basicSetup,
+          janet(),
+          keymap.of(keyBindings),
+          EditorView.updateListener.of(function (viewUpdate) {
+            if (viewUpdate.docChanged) {
+              Module.set_signal(Module.signals.scriptDirty, true);
+              Module.FS.writeFile(
+                "/voodoo/game.janet",
+                viewUpdate.state.doc.toString(),
+                { encoding: "utf8" }
+              );
+              Module.FS.syncfs(true, function (err) {
+                if (!!err) console.error(err);
+              });
+            }
+          }),
+          theme,
+          syntaxHighlighting(highlightStyle),
+        ],
+        parent,
+        doc: entryScriptSrc,
+      });
+    },
+  ],
+};
+
+Voodoo(Module).then((VD) => {
   let ctrlClickedAt = 0;
   const isTryingToEngageNumberDrag = () => {
     return performance.now() - ctrlClickedAt < 100;
@@ -186,7 +213,7 @@ Voodoo().then((VD) => {
   });
   parent.addEventListener("pointermove", (e) => {
     if (parent.hasPointerCapture(e.pointerId)) {
-      alterNumber(editor, Big(e.movementX).times("1"));
+      alterNumber(VD.editor, Big(e.movementX).times("1"));
     }
   });
 
@@ -200,11 +227,11 @@ Voodoo().then((VD) => {
   // So on Firefox you have to use an actual right-click.
   // It's very annoying. This is an *okay* workaround.
   document.addEventListener("pointermove", (e) => {
-    if (!editor.hasFocus) {
+    if (!VD.editor.hasFocus) {
       return;
     }
     if (e.shiftKey && e.metaKey) {
-      alterNumber(editor, Big(e.movementX).times("1"));
+      alterNumber(VD.editor, Big(e.movementX).times("1"));
     }
   });
 

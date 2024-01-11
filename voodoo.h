@@ -129,6 +129,8 @@ static struct
 {
   struct
   {
+    int width;
+    int height;
     JanetFiber *main_fiber;
     JanetFunction *mod_init_cb;
     JanetFunction *mod_event_cb;
@@ -453,7 +455,7 @@ void vd__gfx_init()
   });
 }
 
-void vd__gfx_shutdown()
+static void vd__gfx_shutdown()
 {
   sgl_shutdown();
   sg_shutdown();
@@ -653,6 +655,75 @@ static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv)
   return janet_wrap_nil();
 }
 
+//    ____________  _______  ______
+//   / __/ ___/ _ \/  _/ _ \/_  __/
+//  _\ \/ /__/ , _// // ___/ / /
+// /___/\___/_/|_/___/_/    /_/
+//
+// >>script
+
+static void vd__app_init();
+static void vd__app_shutdown();
+
+typedef struct
+{
+  bool error;
+  const char *script_src;
+  const char *error_msg;
+} vd__compilation_result;
+
+EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
+{
+  vd__app_shutdown();
+  vd__app_init();
+  return 1;
+}
+
+static void vd__script_init(void)
+{
+  janet_init();
+  JanetTable *core_env = janet_core_env(NULL);
+  JanetTable *lookup = janet_env_lookup(core_env);
+
+  vd__janet_cdefs(core_env);
+  janet_cfuns(core_env, NULL, vd__cfuns);
+
+  struct stat info;
+  const char *str = stat("/voodoo", &info) != 0 ? "(setdyn :syspath \"./assets/scripts\")\n"
+                                                  "(import game :prefix \"\")\n"
+                                                  "(voodoo)"
+                                                : "(setdyn :syspath \"./voodoo\")\n"
+                                                  "(import game :prefix \"\")\n"
+                                                  "(voodoo)";
+
+  Janet ret;
+  JanetSignal status = janet_dostring(core_env, str, "main", &ret);
+
+  if (status == JANET_SIGNAL_ERROR)
+  {
+    fprintf(stderr, "missing run argument");
+    sargs_shutdown();
+    exit(1);
+  }
+
+  JanetTable *cfg = janet_unwrap_table(ret);
+  vd__state.app.width = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("width")));
+  vd__state.app.height = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("height")));
+  vd__state.app.mod_init_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("init")));
+  vd__state.app.mod_event_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("event")));
+  vd__state.app.mod_update_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("update")));
+  vd__state.app.mod_shutdown_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("shutdown")));
+  janet_gcroot(janet_wrap_function(vd__state.app.mod_init_cb));
+  janet_gcroot(janet_wrap_function(vd__state.app.mod_event_cb));
+  janet_gcroot(janet_wrap_function(vd__state.app.mod_update_cb));
+  janet_gcroot(janet_wrap_function(vd__state.app.mod_shutdown_cb));
+}
+
+static void vd__script_shutdown(void)
+{
+  janet_deinit();
+}
+
 //    ___   ___  ___
 //   / _ | / _ \/ _ \
 //  / __ |/ ___/ ___/
@@ -694,8 +765,9 @@ JanetSignal vd__app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const
   return janet_continue(fiber, janet_wrap_nil(), out);
 }
 
-void vd__app_init(void)
+void vd__app_init()
 {
+  vd__script_init();
   vd__gfx_init();
   vd__dbg_draw_init();
 
@@ -708,6 +780,15 @@ void vd__app_init(void)
     janet_stacktrace(vd__state.app.main_fiber, ret);
     sapp_quit();
   }
+}
+
+void vd__app_shutdown(void)
+{
+  vd__gfx_shutdown();
+  vd__script_shutdown();
+  if (sargs_isvalid())
+    sargs_shutdown();
+  memset(&vd__state, 0, sizeof(vd__state));
 }
 
 void vd__app_event(const sapp_event *ev)
@@ -727,8 +808,34 @@ void vd__app_event(const sapp_event *ev)
 
 void vd__app_update(void)
 {
-  // jsfun_vd_app_update();
-  // EM_ASM({ console.log(Module.Signal.get(Module.signals.scriptDirty)); });
+  EM_ASM({
+    if (Module.get_signal(Module.signals.scriptDirty))
+    {
+      const result = Module._vd__script_evaluate(stringToNewUTF8(Module.editor.state.doc.toString()));
+      Module.set_signal(Module.signals.scriptDirty, false);
+      if (!result)
+      {
+        // Signal.set(evaluationState, EvaluationState.EvaluationError);
+        console.error("failed evaluation");
+      }
+      else
+      {
+        // try {
+        //   renderer.recompileShader(result.shaderSource);
+        //   Signal.set(evaluationState, EvaluationState.Success);
+        //   Signal.set(isAnimation, result.isAnimated);
+        // } catch (e: any) {
+        //   Signal.set(evaluationState, EvaluationState.ShaderCompilationError);
+        //   outputChannel.print(e.toString(), true);
+        //   if (e.cause != null) {
+        //     outputChannel.print(e.cause, true);
+        //   }
+        // }
+        console.log("successfully evaluated script!");
+      }
+      // outputChannel.target = null;
+    }
+  });
 
   Janet ret;
   JanetSignal status =
@@ -743,16 +850,8 @@ void vd__app_update(void)
   vd__dbg_draw();
 }
 
-void vd__app_shutdown(void)
-{
-  vd__gfx_shutdown();
-  sargs_shutdown();
-}
-
 sapp_desc sokol_main(int argc, char *argv[])
 {
-  // EM_ASM({ console.log(FS.readFile("assets/scripts/game.janet", {encoding : "utf8"})); });
-
   sargs_setup(&(sargs_desc){.argc = argc, .argv = argv});
 
   const char *mod = NULL, *err = NULL;
@@ -768,45 +867,15 @@ sapp_desc sokol_main(int argc, char *argv[])
     exit(1);
   }
 
-  janet_init();
-  JanetTable *core_env = janet_core_env(NULL);
-  JanetTable *lookup = janet_env_lookup(core_env);
-
-  vd__janet_cdefs(core_env);
-  janet_cfuns(core_env, NULL, vd__cfuns);
-
-  Janet ret;
-  JanetSignal status = janet_dostring(core_env,
-                                      "(setdyn :syspath \"./assets/scripts\")\n"
-                                      "(import game :prefix \"\")\n"
-                                      // "@{:init init :frame frame :shutdown shutdown}",
-                                      "(voodoo)",
-                                      "main", &ret);
-
-  if (status == JANET_SIGNAL_ERROR)
-  {
-    fprintf(stderr, "missing run argument");
-    sargs_shutdown();
-    exit(1);
-  }
-
-  JanetTable *cfg = janet_unwrap_table(ret);
-  vd__state.app.mod_init_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("init")));
-  vd__state.app.mod_event_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("event")));
-  vd__state.app.mod_update_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("update")));
-  vd__state.app.mod_shutdown_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("shutdown")));
-  janet_gcroot(janet_wrap_function(vd__state.app.mod_init_cb));
-  janet_gcroot(janet_wrap_function(vd__state.app.mod_event_cb));
-  janet_gcroot(janet_wrap_function(vd__state.app.mod_update_cb));
-  janet_gcroot(janet_wrap_function(vd__state.app.mod_shutdown_cb));
+  vd__script_init();
 
   return (sapp_desc){
     .init_cb = vd__app_init,
     .event_cb = vd__app_event,
     .frame_cb = vd__app_update,
     .cleanup_cb = vd__app_shutdown,
-    .width = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("width"))),
-    .height = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("height"))),
+    .width = vd__state.app.width,
+    .height = vd__state.app.height,
     .sample_count = 4,
     .window_title = "Cube (sokol-app)",
     .icon.sokol_default = true,
