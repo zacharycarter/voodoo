@@ -10,7 +10,8 @@ voodoo is focused on creating games for the browser.
 This is very much WIP.
 
 ## Video demonstration
-[assets/scripts/game.janet](https://github.com/zacharycarter/voodoo/assets/1181513/1c8b2f39-352f-47e6-90f8-e0bb8a3942ad)
+[assets/scripts/game.janet](https://github.com/zacharycarter/voodoo/assets/1181513/b061174c-ac01-4f5e-84a0-370eb4942dc0)
+
 
 ## [Example](https://github.com/zacharycarter/voodoo/blob/master/assets/scripts/game.janet)
 
