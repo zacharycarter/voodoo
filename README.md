@@ -7,7 +7,7 @@ voodoo exposes an API that is intended to be invoked via scripts written in [Jan
 
 voodoo is focused on creating games for the browser.
 
-This is very much WIP.
+voodoo is very much WIP.
 
 ## Video demonstration
 [assets/scripts/game.janet](https://github.com/zacharycarter/voodoo/assets/1181513/b061174c-ac01-4f5e-84a0-370eb4942dc0)
