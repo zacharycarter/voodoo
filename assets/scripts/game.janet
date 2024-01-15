@@ -2,11 +2,13 @@
 
 (defn init []
   (set (state :camera) (cam/new @{:min-dist 1.0
-                                  :max-dist 2000.0
+                                  :max-dist 50.0
                                   :center @[0.0 0.0 0.0]
                                   :distance 5.0
                                   :latitude 45.0
-                                  :longitude 45.0})))
+                                  :longitude 45.0
+                                  :nearz 0.01
+                                  :farz 2000.0})))
 
 (defn event [e]
   (cam/handle-event (state :camera) e))

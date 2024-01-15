@@ -4,10 +4,11 @@ import { EditorView, keymap } from "@codemirror/view";
 import { syntaxHighlighting, HighlightStyle } from "@codemirror/language";
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
 import { janet } from "codemirror-lang-janet";
+import { dracula } from "thememirror";
 import { tags } from "@lezer/highlight";
 
 import * as Signal from "./signals.js";
-import Voodoo from "./voodoo.js";
+import Voodoo from "../../voodoo.js";
 
 import "../css/main.css";
 
@@ -63,13 +64,13 @@ function alterNumber({ state, dispatch }, amount) {
 }
 
 const highlightStyle = HighlightStyle.define([
-  { tag: tags.keyword, color: "var(--purple)" },
-  { tag: tags.atom, color: "var(--foreground)" },
-  { tag: tags.number, color: "var(--blue)" },
+  { tag: tags.keyword, color: "var(--pink)" },
+  { tag: tags.atom, color: "var(--pink)" },
+  { tag: tags.number, color: "var(--pink)" },
   { tag: tags.comment, color: "var(--comment)" },
   { tag: tags.null, color: "var(--purple)" },
   { tag: tags.bool, color: "var(--purple)" },
-  { tag: tags.string, color: "var(--green)" },
+  { tag: tags.string, color: "var(--yellow)" },
 ]);
 
 const theme = EditorView.theme({
@@ -135,7 +136,7 @@ const theme = EditorView.theme({
       backgroundColor: "var(--selection)",
     },
   ".cm-gutters": {
-    backgroundColor: "var(--line)",
+    backgroundColor: "var(--foreground)",
     color: "var(--comment)",
     border: "none",
   },
@@ -159,10 +160,18 @@ const Module = {
   },
   preRun: [
     () => {
-      const entryScriptSrc = Module.FS.readFile("/assets/scripts/game.janet", { encoding: "utf8" });
+      const entryScriptSrc = Module.FS.readFile("/assets/scripts/game.janet", {
+        encoding: "utf8",
+      });
       const entryScriptSrcBuf = new TextEncoder("utf-8").encode(entryScriptSrc);
       const entryScriptFile = Module.FS.open("/voodoo/game.janet", "w+");
-      Module.FS.write(entryScriptFile, entryScriptSrcBuf, 0, entryScriptSrcBuf.length, 0);
+      Module.FS.write(
+        entryScriptFile,
+        entryScriptSrcBuf,
+        0,
+        entryScriptSrcBuf.length,
+        0
+      );
       Module.FS.close(entryScriptFile);
 
       Module.editor = new EditorView({
@@ -183,8 +192,7 @@ const Module = {
               });
             }
           }),
-          theme,
-          syntaxHighlighting(highlightStyle),
+          dracula,
         ],
         parent,
         doc: entryScriptSrc,

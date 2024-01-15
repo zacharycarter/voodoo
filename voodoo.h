@@ -421,6 +421,8 @@ static Janet cfun_vd_cam_new(int32_t argc, Janet *argv)
                       .distance = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("distance"))),
                       .latitude = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("latitude"))),
                       .longitude = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("longitude"))),
+                      .nearz = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("nearz"))),
+                      .farz = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("farz"))),
                     });
   return janet_wrap_abstract(cam);
 }

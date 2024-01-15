@@ -1,6 +1,3 @@
 node_modules
 .voodoo
 assets/shaders/wgsl
-web/dist
-web/src/js/voodoo.js
-web/src/js/voodoo.data

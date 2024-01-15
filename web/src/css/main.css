@@ -20,18 +20,19 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --foreground: #c5c8c6;
-    --background: #1d1f21;
-    --selection: #373b41;
-    --line: #282a2e;
-    --comment: #969896;
+    --foreground: #4f044a;
+    --background: #2d2f3f;
+    --selection: rgba(255, 255, 255, 0.10);
+    --line: rgba(255, 255, 255, 0.10);
+    --comment: #6272a4;
     --red: #cc6666;
-    --orange: #de935f;
-    --yellow: #f0c674;
-    --green: #b5bd68;
+    --orange: #a68358;
+    --yellow: #f1fa8c;
+    --green: #30866c;
     --aqua: #8abeb7;
     --blue: #81a2be;
-    --purple: #b294bb;
+    --purple: #bd93f9;
+    --pink: #ff79c6;
     --window: #4d5057;
   }
 }
@@ -46,9 +47,13 @@
 }
 
 body {
-    background-color: var(--background);
-    width: 100%;
-    height: 100%;
+  background-color: var(--background);
+  width: 100%;
+  height: 100%;
+}
+
+header {
+  background-color: var(--foreground);
 }
 
 .cm-content {
