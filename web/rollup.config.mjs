@@ -6,7 +6,7 @@ import autoprefixer from "autoprefixer";
 export default {
   input: "./web/src/js/index.js",
   output: {
-    file: "./web/dist/voodoo.bundle.js",
+    file: "./web/voodoo.bundle.js",
     format: "iife",
     name: "voodoo",
   },
