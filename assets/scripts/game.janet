@@ -1,4 +1,5 @@
-(def state @{:camera nil})
+(def state @{:camera nil
+             :player @{:model nil}})
 
 (defn init []
   (set (state :camera) (cam/new @{:min-dist 1.0

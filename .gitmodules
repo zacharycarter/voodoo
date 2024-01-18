@@ -1,9 +1,6 @@
-[submodule "thirdparty/cimgui"]
-	path = thirdparty/cimgui
-	url = git@github.com:cimgui/cimgui.git
-[submodule "thirdparty/zpl"]
-	path = thirdparty/zpl
-	url = git@github.com:zpl-c/zpl.git
-[submodule "thirdparty/flecs"]
-	path = thirdparty/flecs
-	url = git@github.com:SanderMertens/flecs.git
+[submodule "thirdparty/ozz-animation"]
+	path = thirdparty/ozz-animation
+	url = https://github.com/guillaumeblanc/ozz-animation.git
+[submodule "thirdparty/sx"]
+	path = thirdparty/sx
+	url = git@github.com:zacharycarter/sx.git

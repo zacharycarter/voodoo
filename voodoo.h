@@ -48,10 +48,6 @@ static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv);
 
-static void vd__janet_cdefs(JanetTable *env)
-{
-}
-
 static const JanetReg vd__cfuns[] = {
   {"app/width", cfun_vd_app_width, "(voodoo/app/width)\n\nWidth of the current application."},
   {"app/height", cfun_vd_app_height, "(voodoo/app/height)\n\nHeight of the current application."},
@@ -64,7 +60,6 @@ static const JanetReg vd__cfuns[] = {
   {"dbg/draw/cube", cfun_vd_dbg_draw_cube, "(voodoo/dbg/draw/cube)\n\nDraw a debug cube."},
   {"dbg/draw/grid", cfun_vd_dbg_draw_grid, "(voodoo/dbg/draw/grid)\n\nDraw a debug grid."},
   {NULL, NULL, NULL}};
-
 #endif // VOODOO_INCLUDED
 
 //     ______  _______  __    ________  __________   ___________  ______________  _   __
@@ -82,25 +77,95 @@ static const JanetReg vd__cfuns[] = {
 #pragma warning(push)
 #endif
 
-#define ZPL_IMPL
-#define ZPL_NANO
-#define ZPL_ENABLE_HASHING
-#include <zpl.h>
+#include <emscripten/threading.h>
+
+#include "sx/allocator.h"
+#include "sx/array.h"
+#include "sx/atomic.h"
+#include "sx/hash.h"
+#include "sx/io.h"
+#include "sx/lockless.h"
+#include "sx/os.h"
+#include "sx/platform.h"
+#include "sx/pool.h"
+#include "sx/string.h"
+#include "sx/threads.h"
+#include "sx/vmem.h"
+#include "stackwalkerc.h"
 
 #define HANDMADE_MATH_IMPLEMENTATION
-#define HANDMADE_MATH_NO_SIMD
 #include "hmm.h"
+#include "ozz_util.h"
 #define SOKOL_IMPL
 #define SOKOL_WGPU
 #include "sokol_app.h"
 #include "sokol_args.h"
+#include "sokol_fetch.h"
 #include "sokol_gfx.h"
 #include "sokol_gl.h"
 #include "sokol_glue.h"
 #include "sokol_log.h"
 #include "sokol_shape.h"
 #include "sokol_time.h"
+
 #include "shapes.glsl.h"
+
+static const sx_alloc *vd__core_heap_alloc(void);
+int64_t vd__core_frame_index();
+int vd__app_width();
+int vd__app_height();
+
+//   _________  _  _______________
+//  / ___/ __ \/ |/ / __/  _/ ___/
+// / /__/ /_/ /    / _/_/ // (_ /
+// \___/\____/_/|_/_/ /___/\___/
+//
+// >>config
+
+#ifndef VD__MAX_PATH
+#define VD__MAX_PATH 256
+#endif
+
+//    __   ____  _______________  _______
+//   / /  / __ \/ ___/ ___/  _/ |/ / ___/
+//  / /__/ /_/ / (_ / (_ // //    / (_ /
+// /____/\____/\___/\___/___/_/|_/\___/
+//
+// >>logging
+
+typedef enum
+{
+  VD__LOG_LEVEL_ERROR = 0,
+  VD__LOG_LEVEL_WARNING,
+  VD__LOG_LEVEL_INFO,
+  VD__LOG_LEVEL_VERBOSE,
+  VD__LOG_LEVEL_DEBUG,
+  VD__LOG_LEVEL_COUNT
+} vd__log_level;
+
+void (*vd__core_print_info)(uint32_t channels, const char *source_file, int line, const char *fmt, ...);
+void (*vd__core_print_debug)(uint32_t channels, const char *source_file, int line, const char *fmt, ...);
+void (*vd__core_print_verbose)(uint32_t channels, const char *source_file, int line, const char *fmt, ...);
+void (*vd__core_print_error)(uint32_t channels, const char *source_file, int line, const char *fmt, ...);
+void (*vd__core_print_warning)(uint32_t channels, const char *source_file, int line, const char *fmt, ...);
+void (*vd__core_set_log_level)(vd__log_level level);
+
+#define vd__log_info(_text, ...) vd__core_print_info(0, __FILE__, __LINE__, _text, ##__VA_ARGS__)
+#define vd__log_debug(_text, ...) vd__core_print_debug(0, __FILE__, __LINE__, _text, ##__VA_ARGS__)
+#define vd__log_verbose(_text, ...) vd__core_print_verbose(0, __FILE__, __LINE__, _text, ##__VA_ARGS__)
+#define vd__log_error(_text, ...) vd__core_print_error(0, __FILE__, __LINE__, _text, ##__VA_ARGS__)
+#define vd__log_warn(_text, ...) vd__core_print_warning(0, __FILE__, __LINE__, _text, ##__VA_ARGS__)
+
+#define vd__log_info_channels(_channels, _text, ...)                                                                   \
+  vd__core_print_info((_channels), __FILE__, __LINE__, _text, ##__VA_ARGS__)
+#define vd__log_debug_channels(_channels, _text, ...)                                                                  \
+  vd__core_print_debug((_channels), __FILE__, __LINE__, _text, ##__VA_ARGS__)
+#define vd__log_verbose_channels(_channels, _text, ...)                                                                \
+  vd__core_print_verbose((_channels), __FILE__, __LINE__, _text, ##__VA_ARGS__)
+#define vd__log_error_channels(_channels, _text, ...)                                                                  \
+  vd__core_print_error((_channels), __FILE__, __LINE__, _text, ##__VA_ARGS__)
+#define vd__log_warn_channels(_channels, _text, ...)                                                                   \
+  vd__core_print_warning((_channels), __FILE__, __LINE__, _text, ##__VA_ARGS__)
 
 //    _____________  __  _________________
 //   / __/_  __/ _ \/ / / / ___/_  __/ __/
@@ -111,19 +176,250 @@ static const JanetReg vd__cfuns[] = {
 
 enum
 {
+  VD__CORE_FLAG_LOG_TO_FILE = 0x01,        // log to file defined by `app_name.log`
+  VD__CORE_FLAG_LOG_TO_PROFILER = 0x02,    // log to remote profiler
+  VD__CORE_FLAG_PROFILE_GPU = 0x04,        // enable GPU profiling
+  VD__CORE_FLAG_DUMP_UNUSED_ASSETS = 0x08, // write `unused-assets.json` on exit
+  VD__CORE_FLAG_DETECT_LEAKS = 0x10,       // Detect memory leaks (default on in _DEBUG builds)
+  VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR =
+    0x20, // Replace temp allocator backends with heap, so we can better trace out-of-bounds and corruption
+  VD__CORE_FLAG_HOT_RELOAD_PLUGINS =
+    0x40, // Enables hot reloading for all modules and plugins including the game itself
+  VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR =
+    0x80 // Enable memory tracing on temp allocators, slows them down, but provides more insight on temp allocations
+};
+typedef uint32_t vd__core_flags;
+
+typedef struct
+{
+  vd__core_flags core_flags;
+  vd__log_level log_level; // default = VD__LOG_LEVEL_INFO
+} vd__config;
+
+typedef struct vd__tmp_alloc vd__tmp_alloc;
+typedef struct
+{
+  sx_alloc alloc;
+  vd__tmp_alloc *owner;
+  size_t end_offset;
+  size_t start_offset;
+  size_t start_lastptr_offset;
+  uint32_t depth;
+  const char *file;
+  uint32_t line;
+} vd__tmp_alloc_inst;
+
+typedef struct vd__tmp_alloc
+{
+  sx_alloc *tracer;
+  sx_vmem_context vmem;
+  vd__tmp_alloc_inst *SX_ARRAY alloc_stack;
+  sx_atomic_uint32 stack_depth;
+  float wait_time;
+  size_t peak;
+  size_t frame_peak;
+};
+
+typedef struct
+{
+  void *ptr;
+  size_t size;
+  char file[32];
+  uint32_t line;
+} vd__tmp_alloc_heapmode_item;
+
+typedef struct vd__tmp_alloc_heapmode vd__tmp_alloc_heapmode;
+typedef struct
+{
+  sx_alloc alloc;
+  vd__tmp_alloc_heapmode *owner;
+  int item_idx;
+  const char *file;
+  uint32_t line;
+} vd__tmp_alloc_heapmode_inst;
+
+typedef struct vd__tmp_alloc_heapmode
+{
+  size_t offset;
+  size_t max_size;
+  size_t peak;
+  size_t frame_peak;
+  sx_atomic_uint32 stack_depth;
+  float wait_time;
+  vd__tmp_alloc_heapmode_item *SX_ARRAY items;
+  vd__tmp_alloc_heapmode_inst *SX_ARRAY alloc_stack;
+};
+
+typedef struct
+{
+  bool init;
+  uint32_t tid;
+  float idle_tm;
+  union {
+    vd__tmp_alloc alloc;
+    vd__tmp_alloc_heapmode heap_alloc;
+  };
+
+  sx_alloc *tracer_front; // This is the trace-allocator that is filled with trace data during
+                          // the frame exec
+  sx_alloc *tracer_back;  // This is the trace-allocator that information is saved from the
+                          // previous frame and can be viewed in imgui
+} vd__tmp_alloc_tls;
+
+typedef enum
+{
   VD__BOX = 0,
   VD__PLANE,
   VD__SPHERE,
   VD__CYLINDER,
   VD__TORUS,
   VD__NUM_SHAPES
-};
+} vd__dbg_shapes;
 
 typedef struct
 {
   HMM_Vec3 pos;
   sshape_element_range_t draw;
 } vd__dbg_shape;
+
+typedef struct vd__mem_trace_context vd__mem_trace_context;
+
+typedef enum
+{
+  VD__MEM_ACTION_MALLOC = 0,
+  VD__MEM_ACTION_FREE,
+  VD__MEM_ACTION_REALLOC
+} vd__mem_action;
+
+typedef struct vd__mem_item
+{
+  vd__mem_trace_context *owner;
+  uint16_t num_callstack_items; // = 0, then try to read 'source_file' and 'source_func'
+  vd__mem_action action;
+  size_t size;
+  void *ptr;
+
+  union {
+    void *callstack[SW_MAX_FRAMES];
+
+    struct
+    {
+      char source_file[128];
+      char source_func[32];
+      uint32_t source_line;
+    };
+  };
+
+  uint32_t callstack_hash;
+  struct vd__mem_item *next;
+  struct vd__mem_item *prev;
+  int64_t frame; // record frame number
+  bool freed;    // for mallocs, reallocs that got freed, but we want to keep the record
+} vd__mem_item;
+
+typedef struct
+{
+  int item_idx;
+  vd__mem_item *item;
+  uint32_t count;
+  char entry_symbol[64];
+  size_t size;
+} vd__mem_item_collapsed;
+
+typedef struct vd__mem_trace_context
+{
+  char name[32];
+  char name_view[32];
+  sx_alloc my_alloc;       // all allocations are redirected from this to redirect_alloc
+  sx_alloc redirect_alloc; // receives all alloc calls and performs main allocations
+  uint32_t name_hash;
+  uint32_t options;
+  bool disabled;
+  bool viewDisabled;
+  sx_atomic_uint32 num_items;
+  sx_atomic_uint64 alloc_size;
+  sx_atomic_uint64 peak_size;
+  sx_pool *item_pool;       // item_size = sizeof(vd__mem_item)
+  vd__mem_item *items_list; // first node
+  sx_mutex mtx;
+  vd__mem_item_collapsed *SX_ARRAY cached; // keep sorted cached data
+
+  struct vd__mem_trace_context *parent;
+  struct vd__mem_trace_context *child;
+  struct vd__mem_trace_context *next;
+  struct vd__mem_trace_context *prev;
+} vd__mem_trace_context;
+
+typedef struct
+{
+  char name[32];
+  uint64_t start_tm;
+  sx_mutex mtx;
+  vd__mem_item **SX_ARRAY items;
+} vd__mem_capture_context;
+
+enum
+{
+  VD__VFS_FLAG_NONE = 0x01,
+  VD__VFS_FLAG_ABSOLUTE_PATH = 0x02,
+  VD__VFS_FLAG_TEXT_FILE = 0x04,
+  VD__VFS_FLAG_APPEND = 0x08,
+};
+typedef uint32_t vd__vfs_flags;
+
+typedef enum
+{
+  VD__VFS_CMD_READ,
+  VD__VFS_CMD_WRITE,
+} vd__vfs_async_command;
+
+typedef enum
+{
+  VD__VFS_RESPONSE_READ_FAILED,
+  VD__VFS_RESPONSE_READ_OK,
+  VD__VFS_RESPONSE_WRITE_FAILED,
+  VD__VFS_RESPONSE_WRITE_OK,
+} vd__vfs_response_code;
+
+typedef void(vd__vfs_async_read_cb)(const char *path, sx_mem_block *mem, void *user_data);
+typedef void(vd__vfs_async_write_cb)(const char *path, int64_t bytes_written, sx_mem_block *mem, void *user_data);
+
+typedef struct
+{
+  vd__vfs_async_command cmd;
+  vd__vfs_flags flags;
+  char path[VD__MAX_PATH];
+  sx_mem_block *write_mem;
+  const sx_alloc *alloc;
+  union {
+    vd__vfs_async_read_cb *read_fn;
+    vd__vfs_async_write_cb *write_fn;
+  };
+  void *user_data;
+} vd__vfs_async_request;
+
+typedef struct
+{
+  vd__vfs_response_code code;
+  union {
+    sx_mem_block *read_mem;
+    sx_mem_block *write_mem;
+  };
+  union {
+    vd__vfs_async_read_cb *read_fn;
+    vd__vfs_async_write_cb *write_fn;
+  };
+  void *user_data;
+  int64_t bytes_written;
+  char path[VD__MAX_PATH];
+} vd__vfs_async_response;
+
+typedef struct
+{
+  char path[VD__MAX_PATH];
+  char alias[VD__MAX_PATH];
+  int alias_len;
+} vd__vfs_mount_point;
 
 static struct
 {
@@ -137,6 +433,22 @@ static struct
     JanetFunction *mod_update_cb;
     JanetFunction *mod_shutdown_cb;
   } app;
+
+  struct
+  {
+    const sx_alloc *heap_alloc;
+    sx_alloc *alloc;
+
+    uint32_t flags;
+    int tmp_mem_max;
+    int num_threads;
+    sx_alloc *temp_alloc_dummy;
+
+    int64_t frame_idx;
+
+    sx_mutex tmp_allocs_mtx;
+    vd__tmp_alloc_tls **SX_ARRAY tmp_allocs;
+  } core;
 
   struct
   {
@@ -158,6 +470,30 @@ static struct
 
     } draw;
   } dbg;
+
+  struct
+  {
+#if SX_PLATFORM_WINDOWS
+    sw_context *sw;
+#endif
+
+    const sx_alloc *alloc;
+    sx_atomic_uint64 debug_mem_size;
+    vd__mem_trace_context *root;
+    vd__mem_capture_context capture;
+    sx_atomic_uint32 in_capture;
+  } mem;
+
+  struct
+  {
+    sx_alloc *alloc;
+    vd__vfs_mount_point *mounts;
+    sx_thread *worker;
+    sx_queue_spsc *req_queue;
+    sx_queue_spsc *res_queue;
+    sx_sem worker_sem;
+    int quit;
+  } vfs;
 } vd__state;
 
 //    __  ______ ________ __
@@ -210,6 +546,941 @@ static HMM_Vec3 vd__unwrap_vec3(const Janet val)
   float y = vd__idx_getfloat(view, 1);
   float z = vd__idx_getfloat(view, 2);
   return HMM_V3(x, y, z);
+}
+
+//    __  _________  _______  _____  __
+//   /  |/  / __/  |/  / __ \/ _ \ \/ /
+//  / /|_/ / _// /|_/ / /_/ / , _/\  /
+// /_/  /_/___/_/  /_/\____/_/|_| /_/
+//
+// >>memory
+
+#define vd__mem_trace_context_mutex_enter(opts, mtx)                                                                   \
+  if (opts & VD__MEMOPTION_MULTITHREAD)                                                                                \
+  sx_mutex_enter(&mtx)
+#define vd__mem_trace_context_mutex_exit(opts, mtx)                                                                    \
+  if (opts & VD__MEMOPTION_MULTITHREAD)                                                                                \
+  sx_mutex_exit(&mtx)
+
+enum
+{
+  VD__MEMOPTION_TRACE_CALLSTACK = 0x1, // Stores callstacks per allocation call
+  VD__MEMOPTION_INSERT_CANARIES = 0x4, // inserts canaries for out of boundary detection
+  VD__MEMOPTION_MULTITHREAD = 0x8,     // allocation calls can be called from multiple threads
+  VD__MEMOPTION_ALL = 0xf              // all options above
+};
+typedef uint32_t vd___mem_options;
+
+#define VD__MEMOPTION_INHERIT 0xffffffff
+
+static vd__mem_trace_context *vd__mem_find_trace_context(uint32_t name_hash, vd__mem_trace_context *node)
+{
+  if (node->name_hash == name_hash)
+  {
+    return node;
+  }
+
+  vd__mem_trace_context *child = node->child;
+  while (child)
+  {
+    vd__mem_trace_context *found = vd__mem_find_trace_context(name_hash, child);
+    if (found)
+    {
+      return found;
+    }
+    child = child->next;
+  }
+
+  return NULL;
+}
+
+static vd__mem_trace_context *vd__mem_create_trace_context(const char *name, uint32_t mem_opts, const char *parent)
+{
+  sx_assert(name);
+  uint32_t name_hash = sx_hash_fnv32_str(name);
+  if (vd__state.mem.root)
+  {
+    if (vd__mem_find_trace_context(name_hash, vd__state.mem.root))
+    {
+      sx_assert_alwaysf(0, "duplicate name exists for vd__mem_trace_context: %s", name);
+      return NULL;
+    }
+  }
+
+  vd__mem_trace_context *parent_ctx = vd__state.mem.root;
+  if (parent && parent[0])
+  {
+    parent_ctx = vd__mem_find_trace_context(sx_hash_fnv32_str(parent), vd__state.mem.root);
+    if (!parent_ctx)
+    {
+      sx_assert_alwaysf(0, "parent does not exist for vd__mem_trace_context: %s, parent: %s", name, parent);
+      return NULL;
+    }
+  }
+
+  vd__mem_trace_context *ctx = sx_calloc(vd__state.mem.alloc, sizeof(vd__mem_trace_context));
+  if (!ctx)
+  {
+    sx_memory_fail();
+    return NULL;
+  }
+
+  sx_strcpy(ctx->name, sizeof(ctx->name), name);
+  ctx->name_hash = name_hash;
+  ctx->options = (mem_opts == VD__MEMOPTION_INHERIT && parent_ctx) ? parent_ctx->options : mem_opts;
+  ctx->parent = parent_ctx;
+  ctx->item_pool = sx_pool_create(vd__state.mem.alloc, sizeof(vd__mem_item), 150);
+  if (!ctx->item_pool)
+  {
+    sx_free(vd__state.mem.alloc, ctx);
+    sx_memory_fail();
+    return NULL;
+  }
+
+  if (parent_ctx)
+  {
+    if (parent_ctx->child)
+    {
+      parent_ctx->child->prev = ctx;
+      ctx->next = parent_ctx->child;
+    }
+    parent_ctx->child = ctx;
+  }
+
+  if (ctx->options & VD__MEMOPTION_MULTITHREAD)
+  {
+    sx_mutex_init(&ctx->mtx);
+  }
+
+  return ctx;
+}
+
+static vd__mem_item *mem_find_occupied_item(vd__mem_trace_context *ctx, void *ptr)
+{
+  vd__mem_item *it = ctx->items_list;
+  while (it)
+  {
+    if (it->ptr == ptr && !it->freed)
+    {
+      return it;
+    }
+    it = it->next;
+  }
+
+  return NULL;
+}
+
+static void vd__mem_destroy_trace_item(vd__mem_trace_context *ctx, vd__mem_item *item)
+{
+  sx_assert(ctx);
+
+  // unlink
+  vd__mem_trace_context_mutex_enter(ctx->options, ctx->mtx);
+  if (item->next)
+  {
+    item->next->prev = item->prev;
+  }
+  if (item->prev)
+  {
+    item->prev->next = item->next;
+  }
+  if (ctx->items_list == item)
+  {
+    ctx->items_list = item->next;
+  }
+  item->next = item->prev = NULL;
+  item->freed = false;
+
+  sx_pool_del(ctx->item_pool, item);
+
+  sx_array_clear(ctx->cached);
+  vd__mem_trace_context_mutex_exit(ctx->options, ctx->mtx);
+}
+
+static void vd__mem_create_trace_item(vd__mem_trace_context *ctx, void *ptr, void *old_ptr, size_t size,
+                                      const char *file, const char *func, uint32_t line)
+{
+  vd__mem_item item = {0};
+  if (old_ptr)
+  {
+    item.action = (size == 0) ? VD__MEM_ACTION_FREE : VD__MEM_ACTION_REALLOC;
+  }
+  bool save_current_call = item.action != VD__MEM_ACTION_FREE;
+
+  if (save_current_call)
+  {
+    sx_atomic_fetch_add64_explicit(&vd__state.mem.debug_mem_size, sizeof(vd__mem_item), SX_ATOMIC_MEMORYORDER_RELAXED);
+
+    if (ctx->options & VD__MEMOPTION_TRACE_CALLSTACK)
+    {
+#if SX_PLATFORM_WINDOWS
+      item.num_callstack_items = sw_capture_current(vd__state.mem.sw, item.callstack, &item.callstack_hash);
+      if (item.num_callstack_items == 0)
+      {
+        if (file)
+          sx_strcpy(item.source_file, sizeof(item.source_file), file);
+        if (func)
+          sx_strcpy(item.source_func, sizeof(item.source_func), func);
+        item.source_line = line;
+        item.callstack_hash = sx_hash_xxh32(item.callstack, sizeof(item.callstack), 0);
+      }
+#elif SX_PLATFORM_OSX || SX_PLATFORM_LINUX
+      item.num_callstack_items = backtrace(item.callstack, SW_MAX_FRAMES);
+      if (item.num_callstack_items == 0)
+      {
+        if (file)
+          sx_strcpy(item.source_file, sizeof(item.source_file), file);
+        if (func)
+          sx_strcpy(item.source_func, sizeof(item.source_func), file);
+        item.source_line = line;
+        item.callstack_hash = sx_hash_xxh32(item.callstack, item.num_callstack_items * sizeof(void *), 0);
+      }
+      else
+      {
+        item.callstack_hash = sx_hash_xxh32(item.callstack, sizeof(item.callstack), 0);
+      }
+#else
+      if (file)
+        sx_strcpy(item.source_file, sizeof(item.source_file), file);
+      if (func)
+        sx_strcpy(item.source_func, sizeof(item.source_func), func);
+      item.source_line = line;
+      item.callstack_hash = sx_hash_xxh32(item.callstack, sizeof(item.callstack), 0);
+#endif
+    }
+  }
+
+  item.owner = ctx;
+  item.size = size;
+  item.ptr = ptr;
+  item.frame = vd__core_frame_index();
+  bool in_capture = sx_atomic_load32_explicit(&vd__state.mem.in_capture, SX_ATOMIC_MEMORYORDER_ACQUIRE);
+
+  // special case: FREE and REALLOC, always have previous malloc trace items that we should take care of
+  if (item.action == VD__MEM_ACTION_FREE || item.action == VD__MEM_ACTION_REALLOC)
+  {
+    vd__mem_trace_context_mutex_enter(ctx->options, ctx->mtx);
+    vd__mem_item *old_item = mem_find_occupied_item(ctx, old_ptr);
+    vd__mem_trace_context_mutex_enter(ctx->options, ctx->mtx);
+
+    // old_ptr should be either malloc or realloc and belong to this vd__mem_trace_context
+    sx_assert(old_item && old_item->action == VD__MEM_ACTION_MALLOC || old_item->action == VD__MEM_ACTION_REALLOC);
+    if (old_item)
+    {
+      sx_assert(old_item->size > 0);
+      vd__mem_trace_context *_ctx = ctx;
+      while (_ctx)
+      {
+        sx_atomic_fetch_sub32_explicit(&_ctx->num_items, 1, SX_ATOMIC_MEMORYORDER_RELAXED);
+        sx_atomic_fetch_sub64_explicit(&_ctx->alloc_size, old_item->size, SX_ATOMIC_MEMORYORDER_RELAXED);
+        _ctx = _ctx->parent;
+      }
+
+      if (item.action == VD__MEM_ACTION_FREE)
+      {
+        item.size = old_item->size;
+      }
+
+      if (!in_capture && item.action == VD__MEM_ACTION_FREE)
+      {
+        vd__mem_destroy_trace_item(ctx, old_item);
+        old_item->freed = true;
+      }
+      else if (in_capture)
+      {
+        old_item->freed = true;
+        sx_mutex_lock(vd__state.mem.capture.mtx)
+        {
+          sx_array_push(vd__state.mem.alloc, vd__state.mem.capture.items, old_item);
+        }
+      }
+    }
+  }
+
+  // propogate memory usage to the context and it's parents
+  if (size > 0)
+  {
+    vd__mem_trace_context *_ctx = ctx;
+    while (_ctx)
+    {
+      sx_atomic_fetch_add32_explicit(&_ctx->num_items, 1, SX_ATOMIC_MEMORYORDER_RELAXED);
+      sx_atomic_fetch_add64_explicit(&_ctx->alloc_size, (int64_t)size, SX_ATOMIC_MEMORYORDER_ACQUIRE);
+
+      unsigned long long cur_peak = _ctx->peak_size;
+      while (cur_peak < ctx->alloc_size &&
+             !sx_atomic_compare_exchange64_strong(&_ctx->peak_size, &cur_peak, _ctx->alloc_size))
+      {
+        sx_relax_cpu();
+      }
+      _ctx = _ctx->parent;
+    }
+  }
+
+  // create tracking item and add to linked-list
+  if (save_current_call)
+  {
+    vd__mem_trace_context_mutex_enter(ctx->options, ctx->mtx);
+    vd__mem_item *new_item = (vd__mem_item *)sx_pool_new_and_grow(ctx->item_pool, vd__state.mem.alloc);
+    if (!new_item)
+    {
+      vd__mem_trace_context_mutex_enter(ctx->options, ctx->mtx);
+      sx_memory_fail();
+      return;
+    }
+    sx_memcpy(new_item, &item, sizeof(item));
+
+    if (ctx->items_list)
+    {
+      ctx->items_list->prev = new_item;
+    }
+    new_item->next = ctx->items_list;
+    ctx->items_list = new_item;
+    sx_array_clear(ctx->cached);
+    vd__mem_trace_context_mutex_enter(ctx->options, ctx->mtx);
+
+    if (in_capture)
+    {
+      sx_mutex_lock(vd__state.mem.capture.mtx)
+      {
+        sx_array_push(vd__state.mem.alloc, vd__state.mem.capture.items, new_item);
+      }
+    }
+  }
+}
+
+static void *vd__mem_alloc_cb(void *ptr, size_t size, uint32_t align, const char *file, const char *func, uint32_t line,
+                              void *user_data)
+{
+  vd__mem_trace_context *ctx = user_data;
+  void *p = ctx->redirect_alloc.alloc_cb(ptr, size, align, file, func, line, user_data);
+  if (!ctx->disabled)
+    vd__mem_create_trace_item(ctx, p, ptr, size, file, func, line);
+  return p;
+}
+
+sx_alloc *vd__mem_create_allocator(const char *name, uint32_t mem_opts, const char *parent, const sx_alloc *alloc)
+{
+  // sx_assert(alloc);
+  vd__mem_trace_context *ctx = vd__mem_create_trace_context(name, mem_opts, parent);
+
+  if (ctx)
+  {
+    ctx->my_alloc.alloc_cb = vd__mem_alloc_cb;
+    ctx->my_alloc.user_data = ctx;
+
+    if (alloc)
+      ctx->redirect_alloc = *alloc;
+
+    return &ctx->my_alloc;
+  }
+
+  return NULL;
+}
+
+static void vd__mem_destroy_trace_context(vd__mem_trace_context *ctx)
+{
+  if (ctx)
+  {
+    if (vd__state.mem.root && !vd__mem_find_trace_context(sx_hash_fnv32_str(ctx->name), vd__state.mem.root))
+    {
+      sx_assert_alwaysf(0, "vd__mem_trace_context already destroyed/invalid: %s", ctx->name);
+      return;
+    }
+
+    // destroy children recursively
+    if (ctx->child)
+    {
+      vd__mem_trace_context *child = ctx->child;
+      while (child)
+      {
+        vd__mem_trace_context *next = child->next;
+        vd__mem_destroy_trace_context(child);
+        child = next;
+      }
+    }
+
+    // unlink
+    if (ctx->parent)
+    {
+      vd__mem_trace_context *parent = ctx->parent;
+      if (parent->child == ctx)
+      {
+        parent->child = ctx->next;
+      }
+    }
+
+    if (ctx->next)
+    {
+      ctx->next->prev = ctx->prev;
+    }
+
+    if (ctx->prev)
+    {
+      ctx->prev->next = ctx->next;
+    }
+
+    if (ctx->options & VD__MEMOPTION_MULTITHREAD)
+    {
+      sx_mutex_release(&ctx->mtx);
+    }
+
+    sx_array_free(vd__state.mem.alloc, ctx->cached);
+    sx_pool_destroy(ctx->item_pool, vd__state.mem.alloc);
+    sx_free(vd__state.mem.alloc, ctx);
+  }
+}
+
+void vd__mem_destroy_allocator(sx_alloc *alloc)
+{
+  if (alloc)
+  {
+    vd__mem_trace_context *ctx = alloc->user_data;
+    vd__mem_destroy_trace_context(ctx);
+  }
+}
+
+bool vd__mem_init(uint32_t opts)
+{
+  static const char *k_hardcoded_vspaths[] = {
+    "C:\\Program Files (x86)\\Microsoft Visual "
+    "Studio\\2019\\Community\\Common7\\IDE\\Extensions\\TestPlatform\\Extensions\\Cpp\\x64"};
+
+  sx_assert(opts != VD__MEMOPTION_INHERIT);
+
+  vd__state.mem.alloc = vd__core_heap_alloc();
+
+#if SX_PLATFORM_WINDOWS
+  vd__state.mem.sw = sw_create_context_capture(SW_OPTIONS_SYMBOL | SW_OPTIONS_SOURCEPOS | SW_OPTIONS_MODULEINFO |
+                                                 SW_OPTIONS_SYMBUILDPATH,
+                                               (sw_callbacks){.load_module = mem_callstack_load_module}, NULL);
+  if (!vd__state.mem.sw)
+  {
+    return false;
+  }
+
+  char vspath[SW_MAX_NAME_LEN] = {0};
+
+  size_t num_hardcoded_paths = sizeof(k_hardcoded_vspaths) / sizeof(char *);
+  for (size_t i = 0; i < num_hardcoded_paths; i++)
+  {
+    if (sx_os_path_isdir(k_hardcoded_vspaths[i]))
+    {
+      sx_strcpy(vspath, sizeof(vspath), k_hardcoded_vspaths[i]);
+      break;
+    }
+  }
+
+  // This is a long process, it uses all kinds of shenagians to find visual studio (damn you msvc!)
+  // check previous hardcoded paths that we use to find dbghelp.dll, it is better to add to those instead
+  if (vspath[0] == 0 && vd__win_get_vstudio_dir(vspath, sizeof(vspath)))
+  {
+#if SX_ARCH_64BIT
+    sx_strcat(vspath, sizeof(vspath), "Common7\\IDE\\Extensions\\TestPlatform\\Extensions\\Cpp\\x64");
+#elif SX_ARCH_32BIT
+    sx_strcat(vspath, sizeof(vspath), "Common7\\IDE\\Extensions\\TestPlatform\\Extensions\\Cpp");
+#endif
+  }
+
+  if (vspath[0])
+    sw_set_dbghelp_hintpath(vspath);
+
+  sw_set_callstack_limits(vd__state.mem.sw, 3, SW_MAX_FRAMES);
+#endif // SX_PLATFORM_WINDOWS
+
+  // dummy root trace context
+  vd__state.mem.root = vd__mem_create_trace_context("<memory>", opts, NULL);
+  if (!vd__state.mem.root)
+  {
+    sx_memory_fail();
+    return false;
+  }
+
+  sx_mutex_init(&vd__state.mem.capture.mtx);
+
+  // g_mem_imgui.collapse_items = true;
+
+  return true;
+}
+
+static void vd__mem_shutdown(void)
+{
+#if SX_PLATFORM_WINDOWS
+  sw_destroy_context(g_mem.sw);
+#endif
+
+  if (vd__state.mem.root)
+  {
+    vd__mem_destroy_trace_context(vd__state.mem.root);
+  }
+
+  sx_mutex_release(&vd__state.mem.capture.mtx);
+}
+
+void vd__mem_set_view_name(sx_alloc *alloc, const char *name)
+{
+  vd__mem_trace_context *ctx = alloc->user_data;
+  sx_strcpy(ctx->name_view, sizeof(ctx->name_view), name);
+}
+
+//   _________  ___  ____
+//  / ___/ __ \/ _ \/ __/
+// / /__/ /_/ / , _/ _/
+// \___/\____/_/|_/___/
+//
+// >>core
+
+#define VD__MAX_TEMP_ALLOC_WAIT_TIME 5.0
+#define DEFAULT_TMP_SIZE 0xA00000 // 10mb
+
+static _Thread_local vd__tmp_alloc_tls tl_tmp_alloc;
+
+static void *vd__tmp_alloc_stub_cb(void *ptr, size_t size, uint32_t align, const char *file, const char *func,
+                                   uint32_t line, void *user_data)
+{
+  sx_unused(user_data);
+
+  vd__tmp_alloc_tls *tmpalloc = &tl_tmp_alloc;
+  if (vd__state.core.flags & VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR)
+  {
+    vd__tmp_alloc_heapmode *talloc = &tmpalloc->heap_alloc;
+    vd__tmp_alloc_heapmode_inst *inst = &talloc->alloc_stack[sx_array_count(talloc->alloc_stack) - 1];
+    return inst->alloc.alloc_cb(ptr, size, align, file, func, line, inst->alloc.user_data);
+  }
+  else
+  {
+    vd__tmp_alloc *talloc = &tmpalloc->alloc;
+    vd__tmp_alloc_inst *inst = &talloc->alloc_stack[sx_array_count(talloc->alloc_stack) - 1];
+    return inst->alloc.alloc_cb(ptr, size, align, file, func, line, inst->alloc.user_data);
+  }
+}
+
+static bool vd__init_tmp_alloc_tls(vd__tmp_alloc_tls *tmpalloc)
+{
+  sx_assert(!tmpalloc->init);
+
+  static sx_alloc stub_alloc = {.alloc_cb = vd__tmp_alloc_stub_cb, .user_data = NULL};
+
+  size_t page_sz = sx_os_pagesz();
+  size_t tmp_size =
+    sx_align_mask(vd__state.core.tmp_mem_max > 0 ? vd__state.core.tmp_mem_max * 1024 : DEFAULT_TMP_SIZE, page_sz - 1);
+  uint32_t tid = sx_thread_tid();
+
+  if (!(vd__state.core.flags & VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR))
+  {
+    int num_tmp_pages = sx_vmem_get_needed_pages(tmp_size);
+
+    if (!sx_vmem_init(&tmpalloc->alloc.vmem, 0, num_tmp_pages))
+    {
+      sx_out_of_memory();
+      return false;
+    }
+    sx_vmem_commit_pages(&tmpalloc->alloc.vmem, 0, num_tmp_pages);
+  }
+  else
+  {
+    tmpalloc->heap_alloc.max_size = tmp_size;
+  }
+
+  if (vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR)
+  {
+    char alloc_name[32];
+    sx_snprintf(alloc_name, sizeof(alloc_name), "TempA (tid:#%u)", tid);
+    tmpalloc->tracer_front = vd__mem_create_allocator(alloc_name, VD__MEMOPTION_TRACE_CALLSTACK, "Temp", &stub_alloc);
+    sx_snprintf(alloc_name, sizeof(alloc_name), "TempB (tid:#%u)", tid);
+    tmpalloc->tracer_back = vd__mem_create_allocator(alloc_name, VD__MEMOPTION_TRACE_CALLSTACK, "Temp", &stub_alloc);
+
+    sx_snprintf(alloc_name, sizeof(alloc_name), "Temp (tid:#%u)", tid);
+    vd__mem_set_view_name(tmpalloc->tracer_front, alloc_name);
+    vd__mem_set_view_name(tmpalloc->tracer_back, alloc_name);
+
+    sx_assert(tmpalloc->tracer_front && tmpalloc->tracer_back);
+  }
+
+  vd__log_info("(init) temp allocator created in thread: %u, memory: %d kb", tid, tmp_size / 1024);
+  tmpalloc->init = true;
+  tmpalloc->tid = tid;
+  tmpalloc->idle_tm = 0;
+  return true;
+}
+
+static void vd__release_tmp_alloc_tls(vd__tmp_alloc_tls *tmpalloc)
+{
+  const sx_alloc *alloc = vd__state.core.alloc;
+  if (vd__state.core.flags & VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR)
+  {
+    sx_array_free(alloc, tmpalloc->heap_alloc.items);
+    sx_array_free(alloc, tmpalloc->heap_alloc.alloc_stack);
+    sx_assertf(tmpalloc->heap_alloc.stack_depth == 0, "invalid push/pop order on thread: %u temp allocator",
+               tmpalloc->tid);
+  }
+  else
+  {
+    sx_vmem_release(&tmpalloc->alloc.vmem);
+    sx_array_free(alloc, tmpalloc->alloc.alloc_stack);
+    sx_assertf(tmpalloc->alloc.stack_depth == 0, "invalid push/pop order on thread: %u temp allocator", tmpalloc->tid);
+  }
+
+  if (vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR)
+  {
+    vd__mem_destroy_allocator(tmpalloc->tracer_front);
+    vd__mem_destroy_allocator(tmpalloc->tracer_back);
+  }
+
+  tmpalloc->init = false;
+}
+
+static int vd__core_thread_func(void *user1, void *user2)
+{
+  typedef int (*thread_fn)(void *user_data);
+  thread_fn func = (thread_fn)user2;
+  sx_assert(func);
+
+  int r = func(user1);
+
+  // find the any existing thread temp allocator and destroy it
+  uint32_t tid = sx_thread_tid();
+  sx_mutex_lock(vd__state.core.tmp_allocs_mtx)
+  {
+    for (int i = 0, c = sx_array_count(vd__state.core.tmp_allocs); i < c; i++)
+    {
+      if (vd__state.core.tmp_allocs[i]->tid == tid)
+      {
+        vd__release_tmp_alloc_tls(vd__state.core.tmp_allocs[i]);
+        sx_swap(vd__state.core.tmp_allocs[i], vd__state.core.tmp_allocs[c - 1], vd__tmp_alloc_tls *);
+        sx_array_pop_last(vd__state.core.tmp_allocs);
+        break;
+      }
+    }
+  }
+
+  return r;
+}
+
+static sx_thread *vd__core_thread_create(int (*thread_fn)(void *user_data), void *user_data, const char *debug_name)
+{
+  sx_assert(thread_fn);
+  return sx_thread_create(vd__state.core.alloc, vd__core_thread_func, user_data, 1024 * 1024, debug_name,
+                          (void *)thread_fn);
+}
+
+static int vd__core_thread_destroy(sx_thread *thrd)
+{
+  return sx_thread_destroy((sx_thread *)thrd, vd__state.core.alloc);
+}
+
+static const sx_alloc *vd__core_heap_alloc(void)
+{
+  return vd__state.core.heap_alloc;
+}
+
+int64_t vd__core_frame_index(void)
+{
+  return vd__state.core.frame_idx;
+}
+
+static void vd__core_update(void)
+{
+  // reset temp allocators
+  sx_mutex_enter(&vd__state.core.tmp_allocs_mtx);
+  for (int i = 0, c = sx_array_count(vd__state.core.tmp_allocs); i < c; i++)
+  {
+    vd__tmp_alloc_tls *tmpalloc = vd__state.core.tmp_allocs[i];
+    sx_assert(tmpalloc->init);
+
+    // tmpalloc->idle_tm += dt;
+    if (tmpalloc->idle_tm > VD__MAX_TEMP_ALLOC_WAIT_TIME)
+    {
+      vd__log_debug("destroying thread temp allocator (tid=%u) because it seems to be idle for so long", tmpalloc->tid);
+
+      vd__release_tmp_alloc_tls(tmpalloc);
+      sx_swap(vd__state.core.tmp_allocs[i], vd__state.core.tmp_allocs[c - 1], vd__tmp_alloc_tls *);
+      sx_array_pop_last(vd__state.core.tmp_allocs);
+      --c;
+      continue;
+    }
+
+    if (vd__state.core.flags & VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR)
+    {
+      vd__tmp_alloc_heapmode *t = &tmpalloc->heap_alloc;
+      if (t->stack_depth > 0)
+      {
+        // t->wait_time += dt;
+        if (t->wait_time > VD__MAX_TEMP_ALLOC_WAIT_TIME)
+        {
+          // the__core.print_error(0, t->alloc_stack[t->stack_depth - 1].file, t->alloc_stack[t->stack_depth - 1].line,
+          // "tmp_alloc_push doesn't seem to have the pop call (Thread: %d)", i);
+          sx_assertf(0, "not all tmp_allocs are popped.");
+        }
+      }
+      else
+      {
+        sx_assertf(sx_array_count(t->items) == 0, "not all tmp_alloc items are freed");
+        sx_array_clear(t->items);
+        sx_array_clear(t->alloc_stack);
+        t->offset = 0;
+        t->stack_depth = 0;
+        t->frame_peak = 0;
+        t->wait_time = 0;
+      }
+    }
+    else
+    {
+      vd__tmp_alloc *t = &tmpalloc->alloc;
+
+      if (t->stack_depth > 0)
+      {
+        // t->wait_time += dt;
+        if (t->wait_time > VD__MAX_TEMP_ALLOC_WAIT_TIME)
+        {
+          // the__core.print_error(0, t->alloc_stack[t->stack_depth - 1].file, t->alloc_stack[t->stack_depth - 1].line,
+          // "tmp_alloc_push doesn't seem to have the pop call (Thread: %d)", i);
+          sx_assertf(0, "not all tmp_allocs are popped.");
+        }
+      }
+      else
+      {
+        sx_array_clear(t->alloc_stack);
+        t->stack_depth = 0;
+        t->frame_peak = 0;
+        t->wait_time = 0;
+      }
+    }
+
+    // if (vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR)
+    // {
+    //   sx_assert(tmpalloc->tracer_front && tmpalloc->tracer_back);
+    //   sx_swap(tmpalloc->tracer_front, tmpalloc->tracer_back, sx_alloc *);
+    //   vd__mem_allocator_clear_trace(tmpalloc->tracer_front);
+    //   vd__mem_merge_peak(tmpalloc->tracer_front, tmpalloc->tracer_back);
+    //   vd__mem_disable_trace(tmpalloc->tracer_back);
+    //   vd__mem_enable_trace_view(tmpalloc->tracer_back);
+    //   vd__mem_enable_trace(tmpalloc->tracer_front);
+    //   vd__mem_disable_trace_view(tmpalloc->tracer_front);
+    // }
+  }
+  sx_mutex_exit(&vd__state.core.tmp_allocs_mtx);
+}
+
+static void vd__core_init(const vd__config *conf)
+{
+  vd__state.core.heap_alloc =
+    (conf->core_flags & VD__CORE_FLAG_DETECT_LEAKS) ? sx_alloc_malloc_leak_detect() : sx_alloc_malloc();
+
+  vd__mem_init(VD__MEMOPTION_TRACE_CALLSTACK | VD__MEMOPTION_MULTITHREAD);
+
+  vd__state.core.alloc = vd__mem_create_allocator("core", VD__MEMOPTION_INHERIT, NULL, vd__state.core.heap_alloc);
+  sx_assert_alwaysf(vd__state.core.alloc, "Fatal error: could not create core allocator");
+  sx_mutex_init(&vd__state.core.tmp_allocs_mtx);
+}
+
+static void vd__core_shutdown(void)
+{
+  if (!vd__state.core.heap_alloc)
+    return;
+  const sx_alloc *alloc = vd__state.core.heap_alloc;
+
+  sx_mutex_lock(vd__state.core.tmp_allocs_mtx)
+  {
+    for (int i = 0; i < sx_array_count(vd__state.core.tmp_allocs); i++)
+    {
+      vd__release_tmp_alloc_tls(vd__state.core.tmp_allocs[i]);
+    }
+    sx_array_free(vd__state.core.alloc, vd__state.core.tmp_allocs);
+    vd__state.core.tmp_allocs = NULL;
+    if (vd__state.core.temp_alloc_dummy)
+      vd__mem_destroy_allocator(vd__state.core.temp_alloc_dummy);
+  }
+
+  sx_mutex_release(&vd__state.core.tmp_allocs_mtx);
+
+  vd__mem_destroy_allocator(vd__state.core.alloc);
+  vd__mem_shutdown();
+
+  sx_memset(&vd__state.core, 0x0, sizeof(vd__state.core));
+}
+
+//   _   __________
+//  | | / / __/ __/
+//  | |/ / _/_\ \
+//  |___/_/ /___/
+//
+// >>vfs
+
+static bool vd__vfs_resolve_path(char *out_path, int out_path_sz, const char *path, vd__vfs_flags flags)
+{
+  if (flags & VD__VFS_FLAG_ABSOLUTE_PATH)
+  {
+    sx_os_path_normpath(out_path, out_path_sz, path);
+    return true;
+  }
+  else
+  {
+    // search mount points and see if we find the path
+    for (int i = 0, c = sx_array_count(vd__state.vfs.mounts); i < c; i++)
+    {
+      const vd__vfs_mount_point *mp = &vd__state.vfs.mounts[i];
+      if (sx_strnequal(path, mp->alias, mp->alias_len))
+      {
+        char tmp_path[VD__MAX_PATH];
+        sx_os_path_normpath(tmp_path, sizeof(tmp_path), path + mp->alias_len);
+        sx_os_path_join(out_path, out_path_sz, mp->path, tmp_path);
+        return true;
+      }
+    }
+
+    // check absolute path
+    sx_os_path_normpath(out_path, out_path_sz, path);
+    return sx_os_stat(out_path).type != SX_FILE_TYPE_INVALID;
+  }
+}
+
+static sx_mem_block *vd__vfs_read(const char *path, vd__vfs_flags flags, const sx_alloc *alloc)
+{
+  if (!alloc)
+    alloc = vd__state.vfs.alloc;
+
+  char resolved_path[VD__MAX_PATH];
+  vd__vfs_resolve_path(resolved_path, sizeof(resolved_path), path, flags);
+
+  return !(flags & VD__VFS_FLAG_TEXT_FILE) ? sx_file_load_bin(alloc, resolved_path)
+                                           : sx_file_load_text(alloc, resolved_path);
+}
+
+static int64_t vd__vfs_write(const char *path, const sx_mem_block *mem, vd__vfs_flags flags)
+{
+  char resolved_path[VD__MAX_PATH];
+  sx_file f;
+
+  vd__vfs_resolve_path(resolved_path, sizeof(resolved_path), path, flags);
+  bool r = sx_file_open(&f, resolved_path,
+                        SX_FILE_WRITE | SX_FILE_NOCACHE | ((flags & VD__VFS_FLAG_APPEND) ? SX_FILE_APPEND : 0));
+  if (r)
+  {
+    int64_t written = sx_file_write(&f, mem->data, mem->size);
+    sx_file_close(&f);
+    return written;
+  }
+  else
+  {
+    return -1;
+  }
+}
+
+static void vd__vfs_update(void)
+{
+  vd__vfs_async_response res;
+  while (sx_queue_spsc_consume(vd__state.vfs.res_queue, &res))
+  {
+    switch (res.code)
+    {
+    case VD__VFS_RESPONSE_READ_OK:
+    case VD__VFS_RESPONSE_READ_FAILED:
+      res.read_fn(res.path, res.read_mem, res.user_data);
+      break;
+
+    case VD__VFS_RESPONSE_WRITE_OK:
+    case VD__VFS_RESPONSE_WRITE_FAILED:
+      res.write_fn(res.path, res.bytes_written, res.write_mem, res.user_data);
+      break;
+    }
+  }
+}
+
+static int vd__vfs_worker(void *user)
+{
+  sx_unused(user);
+
+  while (!vd__state.vfs.quit)
+  {
+    vd__vfs_async_request req;
+    if (sx_queue_spsc_consume(vd__state.vfs.req_queue, &req))
+    {
+      vd__vfs_async_response res = {.bytes_written = -1};
+      sx_strcpy(res.path, sizeof(res.path), req.path);
+      res.user_data = req.user_data;
+
+      switch (req.cmd)
+      {
+      case VD__VFS_CMD_READ: {
+        res.read_fn = req.read_fn;
+        sx_mem_block *mem = vd__vfs_read(req.path, req.flags, req.alloc);
+
+        if (mem)
+        {
+          res.code = VD__VFS_RESPONSE_READ_OK;
+          res.read_mem = mem;
+        }
+        else
+        {
+          res.code = VD__VFS_RESPONSE_READ_FAILED;
+        }
+        sx_queue_spsc_produce_and_grow(vd__state.vfs.res_queue, &res, vd__state.vfs.alloc);
+        break;
+      }
+
+      case VD__VFS_CMD_WRITE: {
+        res.write_fn = req.write_fn;
+        int64_t written = vd__vfs_write(req.path, req.write_mem, req.flags);
+
+        if (written > 0)
+        {
+          res.code = VD__VFS_RESPONSE_WRITE_OK;
+          res.bytes_written = written;
+          res.write_mem = req.write_mem;
+        }
+        else
+        {
+          res.code = VD__VFS_RESPONSE_WRITE_FAILED;
+        }
+        sx_queue_spsc_produce_and_grow(vd__state.vfs.res_queue, &res, vd__state.vfs.alloc);
+        break;
+      }
+      }
+    } // if (queue_consume)
+
+    // wait on more jobs
+    sx_semaphore_wait(&vd__state.vfs.worker_sem, -1);
+  }
+
+  return 0;
+}
+
+static void vd__vfs_init()
+{
+  vd__state.vfs.alloc = vd__mem_create_allocator("vfs", VD__MEMOPTION_INHERIT, "core", vd__core_heap_alloc());
+
+  vd__state.vfs.req_queue = sx_queue_spsc_create(vd__state.vfs.alloc, sizeof(vd__vfs_async_request), 128);
+  vd__state.vfs.res_queue = sx_queue_spsc_create(vd__state.vfs.alloc, sizeof(vd__vfs_async_response), 128);
+  if (!vd__state.vfs.req_queue || !vd__state.vfs.res_queue)
+    return;
+
+  sx_semaphore_init(&vd__state.vfs.worker_sem);
+  vd__state.vfs.worker = vd__core_thread_create(vd__vfs_worker, NULL, "vfs_worker");
+}
+
+static void vd__vfs_shutdown()
+{
+  if (!vd__state.vfs.alloc)
+    return;
+
+  if (vd__state.vfs.worker)
+  {
+    vd__state.vfs.quit = 1;
+    sx_semaphore_post(&vd__state.vfs.worker_sem, 1);
+    vd__core_thread_destroy(vd__state.vfs.worker);
+    sx_semaphore_release(&vd__state.vfs.worker_sem);
+  }
+
+  if (vd__state.vfs.req_queue)
+    sx_queue_spsc_destroy(vd__state.vfs.req_queue, vd__state.vfs.alloc);
+  if (vd__state.vfs.res_queue)
+    sx_queue_spsc_destroy(vd__state.vfs.res_queue, vd__state.vfs.alloc);
+
+  // sx_array_free(vd__state.vfs.alloc, vd__state.vfs.modify_cbs);
+  sx_array_free(vd__state.vfs.alloc, vd__state.vfs.mounts);
+
+  vd__mem_destroy_allocator(vd__state.vfs.alloc);
+  vd__state.vfs.alloc = NULL;
 }
 
 //   ________   __  __________  ___
@@ -455,6 +1726,16 @@ void vd__gfx_init()
   sgl_setup(&(sgl_desc_t){
     .logger.func = slog_func,
   });
+
+  sg_image_desc img_desc = (sg_image_desc){
+    .render_target = true,
+    .width = sapp_width(),
+    .height = sapp_height(),
+    .pixel_format = SG_PIXELFORMAT_RGBA32F,
+  };
+
+  sg_image_desc depth_desc = img_desc;
+  depth_desc.pixel_format = SG_PIXELFORMAT_DEPTH;
 }
 
 static void vd__gfx_shutdown()
@@ -681,6 +1962,14 @@ EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
   return 1;
 }
 
+static void vd__janet_cdefs(JanetTable *env)
+{
+  janet_def(env, "voodoo/vfs-flag-none", janet_wrap_integer(VD__VFS_FLAG_NONE), "0x01");
+  janet_def(env, "voodoo/vfs-flag-abs-path", janet_wrap_integer(VD__VFS_FLAG_ABSOLUTE_PATH), "0x02");
+  janet_def(env, "voodoo/vfs-flag-txt-file", janet_wrap_integer(VD__VFS_FLAG_TEXT_FILE), "0x04");
+  janet_def(env, "voodoo/vfs-flag-append", janet_wrap_integer(VD__VFS_FLAG_APPEND), "0x08");
+}
+
 static void vd__script_init(void)
 {
   janet_init();
@@ -690,14 +1979,12 @@ static void vd__script_init(void)
   vd__janet_cdefs(core_env);
   janet_cfuns(core_env, NULL, vd__cfuns);
 
-  struct stat info;
-  const char *str = stat("/voodoo", &info) != 0 ? "(setdyn :syspath \"./assets/scripts\")\n"
-                                                  "(import game :prefix \"\")\n"
-                                                  "(voodoo)"
-                                                : "(setdyn :syspath \"./voodoo\")\n"
-                                                  "(import game :prefix \"\")\n"
-                                                  "(voodoo)";
-
+  const char *str = sx_os_path_exists("/voodoo/game.janet") ? "(setdyn :syspath \"./voodoo\")\n"
+                                                   "(import game :prefix \"\")\n"
+                                                   "(voodoo)"
+                                                 : "(setdyn :syspath \"./assets/scripts\")\n"
+                                                   "(import game :prefix \"\")\n"
+                                                   "(voodoo)";
   Janet ret;
   JanetSignal status = janet_dostring(core_env, str, "main", &ret);
 
@@ -733,14 +2020,14 @@ static void vd__script_shutdown(void)
 //
 // >>app
 
-static Janet cfun_vd_app_width(int32_t argc, Janet *argv)
+int vd__app_width()
 {
-  return janet_wrap_integer(sapp_width());
+  return sapp_width();
 }
 
-static Janet cfun_vd_app_height(int32_t argc, Janet *argv)
+int vd__app_height()
 {
-  return janet_wrap_integer(sapp_height());
+  return sapp_height();
 }
 
 JanetSignal vd__app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const Janet *argv, Janet *out,
@@ -769,6 +2056,8 @@ JanetSignal vd__app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const
 
 void vd__app_init()
 {
+  vd__core_init(&(vd__config){});
+  vd__vfs_init();
   vd__script_init();
   vd__gfx_init();
   vd__dbg_draw_init();
@@ -788,6 +2077,8 @@ void vd__app_shutdown(void)
 {
   vd__gfx_shutdown();
   vd__script_shutdown();
+  vd__vfs_shutdown();
+  vd__core_shutdown();
   if (sargs_isvalid())
     sargs_shutdown();
   memset(&vd__state, 0, sizeof(vd__state));
@@ -810,7 +2101,7 @@ void vd__app_event(const sapp_event *ev)
 
 void vd__app_update(void)
 {
-  EM_ASM({
+  MAIN_THREAD_EM_ASM({
     if (Module.get_signal(Module.signals.scriptDirty))
     {
       const result = Module._vd__script_evaluate(stringToNewUTF8(Module.editor.state.doc.toString()));
@@ -849,6 +2140,8 @@ void vd__app_update(void)
     sapp_quit();
   }
 
+  vd__core_update();
+  vd__vfs_update();
   vd__dbg_draw();
 }
 
@@ -869,7 +2162,7 @@ sapp_desc sokol_main(int argc, char *argv[])
     exit(1);
   }
 
-  vd__script_init();
+  // vd__script_init();
 
   return (sapp_desc){
     .init_cb = vd__app_init,
@@ -883,6 +2176,16 @@ sapp_desc sokol_main(int argc, char *argv[])
     .icon.sokol_default = true,
     .logger.func = slog_func,
   };
+}
+
+static Janet cfun_vd_app_width(int32_t argc, Janet *argv)
+{
+  return janet_wrap_integer(vd__app_width());
+}
+
+static Janet cfun_vd_app_height(int32_t argc, Janet *argv)
+{
+  return janet_wrap_integer(vd__app_height());
 }
 
 #ifdef _MSC_VER

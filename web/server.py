@@ -7,6 +7,7 @@ class Handler(SimpleHTTPRequestHandler):
         '': 'application/octet-stream',
         '.css':	'text/css',
         '.html': 'text/html',
+        '.janet': 'text/plain',
         '.jpg': 'image/jpg',
         '.js':	'application/x-javascript',
         '.json': 'application/json',
@@ -16,8 +17,8 @@ class Handler(SimpleHTTPRequestHandler):
         '.xml': 'application/xml',
     }
 
-    # def __init__(self, *args, **kwargs):
-    #     super().__init__(*args, directory="dist", **kwargs)
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, directory="web", **kwargs)
 
     def end_headers(self):
         self.send_header('Access-Control-Allow-Origin', '*')

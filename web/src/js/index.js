@@ -156,6 +156,7 @@ const Module = {
   preInit: () => {
     Module.FS.mkdir("/voodoo");
     Module.FS.mount(Module.FS.filesystems.IDBFS, {}, "/voodoo");
+    Module.FS.syncfs(true, function (err) {});
     // Module.FS.writeFile("/voodoo/game.janet", "(print \"hello world\")", { encoding: "utf8" });
   },
   preRun: [
@@ -173,7 +174,8 @@ const Module = {
         0
       );
       Module.FS.close(entryScriptFile);
-
+      Module.FS.syncfs(true, function (err) {});
+      
       Module.editor = new EditorView({
         extensions: [
           basicSetup,
