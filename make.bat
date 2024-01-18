@@ -57,6 +57,7 @@ exit
 if "%1"=="" MAKE.bat .\main.c^
 	.\thirdparty\janet\janet.c^
 	./thirdparty/sx/src/allocator.c^
+	./thirdparty/sx/src/fiber.c^
 	./thirdparty/sx/src/handle.c^
 	./thirdparty/sx/src/hash.c^
 	./thirdparty/sx/src/io.c^
@@ -119,6 +120,6 @@ call emar.bat rcu %~dp0\thirdparty\ozz-animation\ozz.a^
   %~dp0thirdparty\ozz-animation\.build\src_fused\mesh.bc^
   %~dp0thirdparty\ozz-util\ozz_util.bc
 
-call emcc %* -g -O0 -msimd128 -mavx -s NO_EXIT_RUNTIME=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4 -DUSE_DBG_UI -I.\assets\shaders\wgsl -I.\thirdparty -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I.\thirdparty\cj5 -I.\thirdparty\hmm -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\ozz-util -o .\web\voodoo.js -s USE_WEBGPU=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -Wfatal-errors --preload-file .\assets\scripts\game.janet -s ALLOW_MEMORY_GROWTH=1 -s ASSERTIONS=1 -s MODULARIZE=1 -s EXPORT_ES6 -s EXPORT_NAME="'Voodoo'" -s EXPORTED_RUNTIME_METHODS=["FS"] -lidbfs.js .\thirdparty\ozz-animation\ozz.a
+call emcc %* -g -O0 -msimd128 -mavx -s NO_EXIT_RUNTIME=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4 -DUSE_DBG_UI -I.\assets\shaders\wgsl -I.\thirdparty -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I.\thirdparty\cj5 -I.\thirdparty\hmm -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\ozz-util -o .\web\voodoo.js -s USE_WEBGPU=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -s ASYNCIFY=1 -Wfatal-errors --preload-file .\assets\scripts\game.janet -s ALLOW_MEMORY_GROWTH=1 -s ASSERTIONS=1 -s MODULARIZE=1 -s EXPORT_ES6 -s EXPORT_NAME="'Voodoo'" -s EXPORTED_RUNTIME_METHODS=["FS"] -lidbfs.js .\thirdparty\ozz-animation\ozz.a
 
 call rollup -c .\web\rollup.config.mjs

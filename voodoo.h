@@ -115,6 +115,9 @@ static const JanetReg vd__cfuns[] = {
 
 #include "shapes.glsl.h"
 
+#define vd__to_id(index) ((uint32_t)(index) + 1)
+#define vd__to_index(id) ((int)(id)-1)
+
 static const sx_alloc *vd__core_heap_alloc(void);
 int64_t vd__core_frame_index();
 int vd__app_width();
@@ -270,7 +273,7 @@ typedef struct vd__asset_mgr
 // Assets consist of files (resource) on disk and load params combination
 // One file may be loaded with different parameters (different allocator, mip-map, LOD, etc.)
 // Each asset is binded to a resource and params data
-typedef struct vd__asset
+typedef struct
 {
   const sx_alloc *alloc;
   sx_handle_t handle;
@@ -304,7 +307,7 @@ typedef struct
 typedef struct
 {
   uint32_t path_hash; // hash of real_path
-  vd__asset asset;
+  vd__asset_handle asset;
 } vd__asset_async_load_req;
 
 typedef enum
@@ -323,14 +326,14 @@ typedef struct vd__asset_async_job
   vd__asset_load_params lparams;
   sx_job_t job;
   vd__asset_job_state state;
-  vd__asset asset;
+  vd__asset_handle asset;
   struct vd__asset_async_job *next;
   struct vd__asset_async_job *prev;
 } vd__asset_async_job;
 
 typedef struct vd__asset_group
 {
-  vd__asset *SX_ARRAY assets;
+  vd__asset_handle *SX_ARRAY assets;
 } vd__asset_group;
 
 enum
@@ -353,6 +356,12 @@ typedef struct
 {
   vd__core_flags core_flags;
   vd__log_level log_level; // default = VD__LOG_LEVEL_INFO
+
+  int job_num_threads;
+  int job_max_fibers;
+  int job_stack_size;
+
+  int tmp_mem_max
 } vd__config;
 
 typedef struct vd__tmp_alloc vd__tmp_alloc;
@@ -611,7 +620,7 @@ static struct
     vd__asset_async_job *async_job_list_last;
     vd__asset_group *groups;
     sx_handle_pool *group_handles;
-    vd__asset_group cur_group;
+    vd__asset_group_handle cur_group;
     sx_lock_t assets_lk; // used for locking assets-array
   } asset;
 
@@ -619,6 +628,8 @@ static struct
   {
     const sx_alloc *heap_alloc;
     sx_alloc *alloc;
+
+    sx_job_context *jobs;
 
     uint32_t flags;
     int tmp_mem_max;
@@ -1214,10 +1225,12 @@ void vd__mem_set_view_name(sx_alloc *alloc, const char *name)
 #define VD__MAX_TEMP_ALLOC_WAIT_TIME 5.0
 #define DEFAULT_TMP_SIZE 0xA00000 // 10mb
 
+static void vd__vfs_init();
+
 static _Thread_local vd__tmp_alloc_tls tl_tmp_alloc;
 
-static void *vd__tmp_alloc_stub_cb(void *ptr, size_t size, uint32_t align, const char *file, const char *func,
-                                   uint32_t line, void *user_data)
+static void *vd__core_tmp_alloc_stub_cb(void *ptr, size_t size, uint32_t align, const char *file, const char *func,
+                                        uint32_t line, void *user_data)
 {
   sx_unused(user_data);
 
@@ -1236,11 +1249,11 @@ static void *vd__tmp_alloc_stub_cb(void *ptr, size_t size, uint32_t align, const
   }
 }
 
-static bool vd__init_tmp_alloc_tls(vd__tmp_alloc_tls *tmpalloc)
+static bool vd__core_init_tmp_alloc_tls(vd__tmp_alloc_tls *tmpalloc)
 {
   sx_assert(!tmpalloc->init);
 
-  static sx_alloc stub_alloc = {.alloc_cb = vd__tmp_alloc_stub_cb, .user_data = NULL};
+  static sx_alloc stub_alloc = {.alloc_cb = vd__core_tmp_alloc_stub_cb, .user_data = NULL};
 
   size_t page_sz = sx_os_pagesz();
   size_t tmp_size =
@@ -1285,7 +1298,7 @@ static bool vd__init_tmp_alloc_tls(vd__tmp_alloc_tls *tmpalloc)
   return true;
 }
 
-static void vd__release_tmp_alloc_tls(vd__tmp_alloc_tls *tmpalloc)
+static void vd__core_release_tmp_alloc_tls(vd__tmp_alloc_tls *tmpalloc)
 {
   const sx_alloc *alloc = vd__state.core.alloc;
   if (vd__state.core.flags & VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR)
@@ -1311,6 +1324,36 @@ static void vd__release_tmp_alloc_tls(vd__tmp_alloc_tls *tmpalloc)
   tmpalloc->init = false;
 }
 
+static sx_job_t vd__core_job_dispatch(int count, void (*callback)(int start, int end, int thrd_index, void *user),
+                                      void *user, sx_job_priority priority, uint32_t tags)
+{
+  sx_assert(vd__state.core.jobs);
+  return sx_job_dispatch(vd__state.core.jobs, count, callback, user, priority, tags);
+}
+
+static void vd__core_job_wait_and_del(sx_job_t job)
+{
+  sx_assert(vd__state.core.jobs);
+  sx_job_wait_and_del(vd__state.core.jobs, job);
+}
+
+static bool vd__core_job_test_and_del(sx_job_t job)
+{
+  sx_assert(vd__state.core.jobs);
+  return sx_job_test_and_del(vd__state.core.jobs, job);
+}
+
+static int vd__core_job_num_threads(void)
+{
+  return vd__state.core.num_threads;
+}
+
+static int vd__core_job_thread_index(void)
+{
+  sx_assert(vd__state.core.jobs);
+  return sx_job_thread_index(vd__state.core.jobs);
+}
+
 static int vd__core_thread_func(void *user1, void *user2)
 {
   typedef int (*thread_fn)(void *user_data);
@@ -1327,7 +1370,7 @@ static int vd__core_thread_func(void *user1, void *user2)
     {
       if (vd__state.core.tmp_allocs[i]->tid == tid)
       {
-        vd__release_tmp_alloc_tls(vd__state.core.tmp_allocs[i]);
+        vd__core_release_tmp_alloc_tls(vd__state.core.tmp_allocs[i]);
         sx_swap(vd__state.core.tmp_allocs[i], vd__state.core.tmp_allocs[c - 1], vd__tmp_alloc_tls *);
         sx_array_pop_last(vd__state.core.tmp_allocs);
         break;
@@ -1374,7 +1417,7 @@ static void vd__core_update(void)
     {
       vd__log_debug("destroying thread temp allocator (tid=%u) because it seems to be idle for so long", tmpalloc->tid);
 
-      vd__release_tmp_alloc_tls(tmpalloc);
+      vd__core_release_tmp_alloc_tls(tmpalloc);
       sx_swap(vd__state.core.tmp_allocs[i], vd__state.core.tmp_allocs[c - 1], vd__tmp_alloc_tls *);
       sx_array_pop_last(vd__state.core.tmp_allocs);
       --c;
@@ -1443,6 +1486,30 @@ static void vd__core_update(void)
   sx_mutex_exit(&vd__state.core.tmp_allocs_mtx);
 }
 
+static void vd__core_job_thread_init_cb(sx_job_context* ctx, int thread_index, uint32_t thread_id,
+                                     void* user)
+{
+    // sx_unused(thread_id);
+    // sx_unused(user);
+    // sx_unused(ctx);
+
+    // char name[32];
+    // sx_snprintf(name, sizeof(name), "Thread #%d", thread_index + 1 /* 0 is for main-thread */);
+    // rmt_SetCurrentThreadName(name);
+    sx_unused(ctx);
+    sx_unused(thread_index);
+    sx_unused(thread_id);
+    sx_unused(user);
+}
+
+static void vd__core_job_thread_shutdown_cb(sx_job_context* ctx, int thread_index, uint32_t thread_id, void* user)
+{
+    sx_unused(ctx);
+    sx_unused(thread_index);
+    sx_unused(thread_id);
+    sx_unused(user);
+}
+
 static void vd__core_init(const vd__config *conf)
 {
   vd__state.core.heap_alloc =
@@ -1453,6 +1520,50 @@ static void vd__core_init(const vd__config *conf)
   vd__state.core.alloc = vd__mem_create_allocator("core", VD__MEMOPTION_INHERIT, NULL, vd__state.core.heap_alloc);
   sx_assert_alwaysf(vd__state.core.alloc, "Fatal error: could not create core allocator");
   sx_mutex_init(&vd__state.core.tmp_allocs_mtx);
+
+  // resolve number of worker threads if not defined explicitly
+  // NOTE: we always have at least one extra worker thread not matter what input is
+  //       default number of "worker threads" are total number of CPU cores minus one, because main thread is obviously
+  //       running on a thread
+  int num_worker_threads = 2; // conf->job_num_threads >= 0 ? conf->job_num_threads : (sx_os_numcores() - 1);
+  num_worker_threads = sx_max(1, num_worker_threads);
+  vd__state.core.num_threads = num_worker_threads + 1;
+
+  // Temp allocator information
+  sx_mutex_init(&vd__state.core.tmp_allocs_mtx);
+  vd__state.core.tmp_mem_max = conf->tmp_mem_max;
+  if (vd__state.core.flags & VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR)
+  {
+    // vd__log_info("(init) using debug temp allocators");
+  }
+  else if (vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR)
+  {
+    // vd__log_info("(init) using memory tracing in temp allocators");
+  }
+
+  if (vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR)
+  {
+    vd__state.core.temp_alloc_dummy = vd__mem_create_allocator("temp", VD__MEMOPTION_INHERIT, NULL, NULL);
+  }
+
+  vd__vfs_init();
+
+  vd__state.core.jobs =
+    sx_job_create_context(vd__state.core.alloc, &(sx_job_context_desc){.num_threads = num_worker_threads,
+                                                        .max_fibers = conf->job_max_fibers,
+                                                        .fiber_stack_sz = conf->job_stack_size * 1024,
+                                                        .thread_init_cb = vd__core_job_thread_init_cb,
+                                                        .thread_shutdown_cb = vd__core_job_thread_shutdown_cb});
+  if (!vd__state.core.jobs)
+  {
+    // rizz__profile_startup_end();
+    // rizz__log_error("initializing job dispatcher failed");
+    // return false;
+    return;
+  }
+  // rizz__log_info("(init) jobs: threads=%d, max_fibers=%d, stack_size=%dkb",
+  //  sx_job_num_worker_threads(vd__state.core.jobs), conf->job_max_fibers,
+  //  conf->job_stack_size);
 }
 
 static void vd__core_shutdown(void)
@@ -1465,7 +1576,7 @@ static void vd__core_shutdown(void)
   {
     for (int i = 0; i < sx_array_count(vd__state.core.tmp_allocs); i++)
     {
-      vd__release_tmp_alloc_tls(vd__state.core.tmp_allocs[i]);
+      vd__core_release_tmp_alloc_tls(vd__state.core.tmp_allocs[i]);
     }
     sx_array_free(vd__state.core.alloc, vd__state.core.tmp_allocs);
     vd__state.core.tmp_allocs = NULL;
@@ -1487,6 +1598,29 @@ static void vd__core_shutdown(void)
 //  |___/_/ /___/
 //
 // >>vfs
+
+static void vd__vfs_read_async(const char *path, vd__vfs_flags flags, const sx_alloc *alloc,
+                               vd__vfs_async_read_cb *read_fn, void *user_data)
+{
+  vd__vfs_async_request req = {.cmd = VD__VFS_CMD_READ, //
+                               .flags = flags,
+                               .alloc = alloc,
+                               .read_fn = read_fn,
+                               .user_data = user_data};
+  sx_strcpy(req.path, sizeof(req.path), path);
+  sx_queue_spsc_produce_and_grow(vd__state.vfs.req_queue, &req, vd__state.vfs.alloc);
+  sx_semaphore_post(&vd__state.vfs.worker_sem, 1);
+}
+
+static void vd__vfs_write_async(const char *path, sx_mem_block *mem, vd__vfs_flags flags,
+                                vd__vfs_async_write_cb *write_fn, void *user_data)
+{
+  vd__vfs_async_request req = {
+    .cmd = VD__VFS_CMD_WRITE, .flags = flags, .write_mem = mem, .write_fn = write_fn, .user_data = user_data};
+  sx_strcpy(req.path, sizeof(req.path), path);
+  sx_queue_spsc_produce_and_grow(vd__state.vfs.req_queue, &req, vd__state.vfs.alloc);
+  sx_semaphore_post(&vd__state.vfs.worker_sem, 1);
+}
 
 bool vd__vfs_mount(const char *path, const char *alias, bool watch)
 {
@@ -1702,12 +1836,518 @@ static void vd__vfs_shutdown()
   vd__state.vfs.alloc = NULL;
 }
 
+static uint64_t vd__vfs_last_modified(const char *path)
+{
+  char resolved_path[VD__MAX_PATH];
+  if (vd__vfs_resolve_path(resolved_path, sizeof(resolved_path), path, 0))
+    return sx_os_stat(resolved_path).last_modified;
+  else
+    return 0;
+}
+
+static const sx_alloc *vd__vfs_alloc(void)
+{
+  return vd__state.vfs.alloc;
+}
+
 //    ___   __________________
 //   / _ | / __/ __/ __/_  __/
 //  / __ |_\ \_\ \/ _/  / /
 // /_/ |_/___/___/___/ /_/
 //
 // >>asset
+
+static inline void vd__asset_job_add_list(vd__asset_async_job **pfirst, vd__asset_async_job **plast,
+                                          vd__asset_async_job *node)
+{
+  // Add to the end of the list
+  if (*plast)
+  {
+    (*plast)->next = node;
+    node->prev = *plast;
+  }
+  *plast = node;
+  if (*pfirst == NULL)
+    *pfirst = node;
+}
+
+static inline void vd__asset_job_remove_list(vd__asset_async_job **pfirst, vd__asset_async_job **plast,
+                                             vd__asset_async_job *node)
+{
+  if (node->prev)
+    node->prev->next = node->next;
+  if (node->next)
+    node->next->prev = node->prev;
+  if (*pfirst == node)
+    *pfirst = node->next;
+  if (*plast == node)
+    *plast = node->prev;
+  node->prev = node->next = NULL;
+}
+
+static void vd__asset_load_job_cb(int start, int end, int thrd_index, void *user)
+{
+  sx_unused(start);
+  sx_unused(end);
+  sx_unused(thrd_index);
+  vd__asset_async_job *ajob = user;
+
+  ajob->state = ajob->amgr->callbacks.on_load(&ajob->load_data, &ajob->lparams, ajob->mem)
+                  ? VD__ASSET_JOB_STATE_SUCCESS
+                  : VD__ASSET_JOB_STATE_LOAD_FAILED;
+}
+
+static bool vd__asset_checkandfix_asset_type(sx_mem_block *mem, const char *filepath, char *outpath, size_t outpath_sz,
+                                             uint32_t *num_meta)
+{
+  if (mem->size < 4)
+  {
+    return false;
+  }
+
+  sx_mem_reader r;
+  sx_mem_init_reader(&r, mem->data, mem->size);
+
+  int64_t bytes;
+  uint32_t flag;
+  bytes = sx_mem_read_var(&r, flag);
+  if (flag != VD__ASSET_FLAG)
+  {
+    return false;
+  }
+
+  char ext[5] = {0};
+  bytes = sx_mem_read(&r, ext, 4);
+  sx_assert_alwaysf(bytes == 4, "invalid _rizz_ header for asset: %s", filepath);
+
+  // fix path: remove the extension and append real extension to the end of the path string
+  char path_ext[32];
+  sx_os_path_splitext(path_ext, sizeof(path_ext), outpath, (int)outpath_sz, filepath);
+  if (ext[0] != '.')
+  {
+    sx_strcat(outpath, (int)outpath_sz, ".");
+  }
+  sx_strcat(outpath, (int)outpath_sz, ext);
+
+  bytes = sx_mem_read(&r, num_meta, sizeof(uint32_t));
+  sx_assert_alwaysf(bytes == sizeof(uint32_t), "invalid _rizz_ header for asset: %s", filepath);
+
+  // increment the offset on the memory pointer
+  sx_mem_addoffset(mem, r.pos);
+  return true;
+}
+
+static inline int vd__asset_find_async_req(const char *path)
+{
+  uint32_t path_hash = sx_hash_fnv32_str(path);
+  for (int i = 0, c = sx_array_count(vd__state.asset.async_reqs); i < c; i++)
+  {
+    vd__asset_async_load_req *req = &vd__state.asset.async_reqs[i];
+    if (req->path_hash == path_hash)
+      return i;
+  }
+
+  return -1;
+}
+
+// async callback
+static void vd__asset_on_read(const char *path, sx_mem_block *mem, void *user)
+{
+  sx_unused(user);
+
+  int async_req_idx = vd__asset_find_async_req(path);
+
+  if (!mem)
+  {
+    // error opening the file
+    if (async_req_idx != -1)
+    {
+      vd__asset_async_load_req *req = &vd__state.asset.async_reqs[async_req_idx];
+      vd__asset_handle asset = req->asset;
+      vd__asset *a = &vd__state.asset.assets[sx_handle_index(asset.id)];
+      sx_assert(a->resource_id);
+      vd__asset_resource *res = &vd__state.asset.resources[vd__to_index(a->resource_id)];
+      vd__asset_mgr *amgr = &vd__state.asset.asset_mgrs[a->asset_mgr_id];
+
+      // vd__asset_errmsg(res->path, res->real_path, "opening");
+      a->state = VD__ASSET_STATE_FAILED;
+      a->obj = amgr->failed_obj;
+
+      sx_array_pop(vd__state.asset.async_reqs, async_req_idx);
+    }
+    return;
+  }
+  else if (async_req_idx == -1)
+  {
+    sx_mem_destroy_block(mem);
+    return;
+  }
+
+  vd__asset_async_load_req *req = &vd__state.asset.async_reqs[async_req_idx];
+  vd__asset_handle asset = req->asset;
+  vd__asset *a = &vd__state.asset.assets[sx_handle_index(asset.id)];
+  sx_assert(a->resource_id);
+  vd__asset_resource *res = &vd__state.asset.resources[vd__to_index(a->resource_id)];
+  vd__asset_mgr *amgr = &vd__state.asset.asset_mgrs[a->asset_mgr_id];
+
+  const void *params_ptr = NULL;
+  if (a->params_id)
+  {
+    params_ptr = &amgr->params_buff[vd__to_index(a->params_id)];
+  }
+
+  vd__asset_load_params aparams = (vd__asset_load_params){
+    .path = res->path, .params = params_ptr, .alloc = a->alloc, .tags = a->tags, .flags = a->load_flags};
+
+  char fixed_path[VD__MAX_PATH];
+  bool path_is_fixed = vd__asset_checkandfix_asset_type(mem, path, fixed_path, sizeof(fixed_path), &aparams.num_meta);
+  vd__asset_meta_keyval *metas = NULL;
+  if (path_is_fixed)
+  {
+    aparams.path = fixed_path;
+    if (aparams.num_meta > 0)
+    {
+      sx_assert(aparams.num_meta < 64);
+      metas = alloca(sizeof(vd__asset_meta_keyval) * aparams.num_meta);
+      sx_assert_always(metas);
+      sx_memcpy(metas, mem->data, sizeof(vd__asset_meta_keyval) * aparams.num_meta);
+      sx_mem_addoffset(mem, sizeof(vd__asset_meta_keyval) * aparams.num_meta);
+      aparams.metas = metas;
+    }
+  }
+
+  vd__asset_load_data load_data = amgr->callbacks.on_prepare(&aparams, mem);
+
+  sx_array_pop(vd__state.asset.async_reqs, async_req_idx);
+  if (!load_data.obj.id)
+  {
+    // vd__asset_errmsg(res->path, res->real_path, "preparing");
+    sx_mem_destroy_block(mem);
+    return;
+  }
+
+  // dispatch job request for on_load
+  // allocate the whole buffer and save a copy of path and params
+  uint8_t *buff = sx_malloc(vd__state.asset.alloc, sizeof(vd__asset_async_job) + amgr->params_size + VD__MAX_PATH +
+                                                     sizeof(vd__asset_meta_keyval) * aparams.num_meta);
+  if (!buff)
+  {
+    sx_memory_fail();
+    return;
+  }
+
+  vd__asset_async_job *ajob = (vd__asset_async_job *)buff;
+  buff += sizeof(vd__asset_async_job);
+  aparams.path = (const char *)buff;
+  sx_memcpy(buff, path_is_fixed ? fixed_path : res->path, VD__MAX_PATH);
+  buff += VD__MAX_PATH;
+  if (aparams.num_meta)
+  {
+    sx_assert((uintptr_t)buff % 8 == 0);
+    aparams.metas = (vd__asset_meta_keyval *)buff;
+    sx_memcpy(buff, metas, sizeof(vd__asset_meta_keyval) * aparams.num_meta);
+    buff += sizeof(vd__asset_meta_keyval) * aparams.num_meta;
+  }
+
+  if (params_ptr)
+  {
+    sx_assert((uintptr_t)buff % 8 == 0);
+    aparams.params = buff;
+    sx_memcpy(buff, params_ptr, amgr->params_size);
+  }
+
+  *ajob = (vd__asset_async_job){.load_data = load_data, .mem = mem, .amgr = amgr, .lparams = aparams, .asset = asset};
+
+  ajob->job = vd__core_job_dispatch(1, vd__asset_load_job_cb, ajob, SX_JOB_PRIORITY_HIGH, 0);
+  vd__asset_job_add_list(&vd__state.asset.async_job_list, &vd__state.asset.async_job_list_last, ajob);
+}
+
+static inline uint32_t vd__asset_hash(const char *path, const void *params, int params_size, const sx_alloc *alloc)
+{
+  sx_hash_xxh32_init(vd__state.asset.hasher, 0);
+  sx_hash_xxh32_update(vd__state.asset.hasher, path, sx_strlen(path));
+  if (params_size)
+    sx_hash_xxh32_update(vd__state.asset.hasher, params, params_size);
+  sx_hash_xxh32_update(vd__state.asset.hasher, &alloc, sizeof(alloc));
+  return sx_hash_xxh32_digest(vd__state.asset.hasher);
+}
+
+static inline int vd__asset_find_asset_mgr(uint32_t name_hash)
+{
+  for (int i = 0, c = sx_array_count(vd__state.asset.asset_name_hashes); i < c; i++)
+  {
+    if (vd__state.asset.asset_name_hashes[i] == name_hash)
+      return i;
+  }
+  return -1;
+}
+
+static vd__asset_handle vd__asset_create_new(const char *path, const void *params, vd__asset_obj obj,
+                                             uint32_t name_hash, const sx_alloc *obj_alloc, vd__asset_load_flags flags,
+                                             uint32_t tags)
+{
+  // find asset manager
+  int amgr_id = vd__asset_find_asset_mgr(name_hash);
+  sx_assertf(amgr_id != -1, "asset type is not registered");
+  vd__asset_mgr *amgr = &vd__state.asset.asset_mgrs[amgr_id];
+
+  // check resources, if doesn't exist, add new resource
+  uint32_t path_hash = sx_hash_fnv32_str(path);
+  int res_idx = sx_hashtbl_find_get(vd__state.asset.resource_tbl, path_hash, -1);
+  if (res_idx == -1)
+  {
+    vd__asset_resource res = {.used = true};
+    sx_strcpy(res.path, sizeof(res.path), path);
+    sx_strcpy(res.real_path, sizeof(res.real_path), path);
+    res.path_hash = path_hash;
+    res.asset_mgr_id = amgr_id;
+#if !SX_PLATFORM_ANDROID && !SX_PLATFORM_IOS
+    res.last_modified = vd__vfs_last_modified(res.real_path);
+#endif
+    res_idx = sx_array_count(vd__state.asset.resources);
+    sx_array_push(vd__state.asset.alloc, vd__state.asset.resources, res);
+    sx_hashtbl_add_and_grow(vd__state.asset.resource_tbl, path_hash, res_idx, vd__state.asset.alloc);
+  }
+  else
+  {
+    vd__state.asset.resources[res_idx].used = true;
+  }
+
+  // new param
+  int params_size = amgr->params_size;
+  uint32_t params_id = 0;
+  if (params_size > 0)
+  {
+    params_id = vd__to_id(sx_array_count(amgr->params_buff)); // actually, it stores the byte-offset
+    sx_memcpy(sx_array_add(vd__state.asset.alloc, amgr->params_buff, params_size), params, params_size);
+  }
+
+  sx_handle_t handle = sx_handle_new_and_grow(vd__state.asset.asset_handles, vd__state.asset.alloc);
+  sx_assert(handle);
+
+  // add asset to database
+  vd__asset asset = (vd__asset){.alloc = obj_alloc,
+                                .handle = handle,
+                                .params_id = params_id,
+                                .resource_id = vd__to_id(res_idx),
+                                .asset_mgr_id = amgr_id,
+                                .ref_count = 1,
+                                .obj = obj,
+                                .hash = vd__asset_hash(path, params, params_size, obj_alloc),
+                                .tags = tags,
+                                .load_flags = flags,
+                                .state = VD__ASSET_STATE_ZOMBIE};
+
+  // have to protected this block of code with a lock
+  // because we may regrow the asset-array
+  // asset-array may be accessed in worker-threads with `obj()` function
+  sx_lock(vd__state.asset.assets_lk)
+  {
+    sx_array_push_byindex(vd__state.asset.alloc, vd__state.asset.assets, asset, sx_handle_index(handle));
+  }
+
+  sx_hashtbl_add_and_grow(vd__state.asset.asset_tbl, asset.hash, handle, vd__state.asset.alloc);
+
+  return (vd__asset_handle){handle};
+}
+
+static vd__asset_handle vd__asset_add(const char *path, const void *params, vd__asset_obj obj, uint32_t name_hash,
+                                      const sx_alloc *obj_alloc, vd__asset_load_flags flags, uint32_t tags,
+                                      vd__asset_handle override_asset)
+{
+  vd__asset_handle asset = override_asset;
+  if (asset.id)
+  {
+    // this block of code actually happens on RELOAD process
+    sx_assert(flags & VD__ASSET_LOAD_FLAG_RELOAD);
+    vd__asset *a = &vd__state.asset.assets[sx_handle_index(asset.id)];
+    vd__asset_mgr *amgr = &vd__state.asset.asset_mgrs[a->asset_mgr_id];
+
+    // keep the current object so it can be released later
+    sx_assert(a->handle == asset.id);
+    if (a->state == VD__ASSET_STATE_OK)
+      a->dead_obj = a->obj;
+    a->obj = obj;
+    sx_assertf(a->alloc == obj_alloc, "allocator must not change in reload");
+    if (amgr->params_size > 0)
+    {
+      sx_assert(a->params_id);
+      sx_memcpy(&amgr->params_buff[vd__to_index(a->params_id)], params, amgr->params_size);
+    }
+  }
+  else
+  {
+    asset = vd__asset_create_new(path, params, obj, name_hash, obj_alloc, flags, tags);
+  }
+
+  return asset;
+}
+
+static vd__asset_handle vd__asset_load_hashed(uint32_t name_hash, const char *path, const void *params,
+                                              vd__asset_load_flags flags, const sx_alloc *obj_alloc, uint32_t tags)
+{
+  if (!path[0])
+  {
+    // vd__log_warn("empty path for asset");
+    return (vd__asset_handle){0};
+  }
+
+  sx_assertf(vd__core_job_thread_index() == 0, "must call this function in the main thread");
+
+  if (flags & VD__ASSET_LOAD_FLAG_RELOAD)
+    flags |= VD__ASSET_LOAD_FLAG_WAIT_ON_LOAD;
+
+  int amgr_id = vd__asset_find_asset_mgr(name_hash);
+  sx_assertf(amgr_id != -1, "asset type is not registered");
+  vd__asset_mgr *amgr = &vd__state.asset.asset_mgrs[amgr_id];
+  flags |= amgr->forced_flags;
+
+  // check if the params are provided and valid
+  if (amgr->params_size && !params)
+  {
+    // vd__log_warn("you must provide `params` of type '%s' for this asset", amgr->params_type_name);
+    sx_assertf(0, "params must not be null for this asset type");
+  }
+
+  // find if asset is already loaded
+  vd__asset_handle asset = (vd__asset_handle){
+    sx_hashtbl_find_get(vd__state.asset.asset_tbl, vd__asset_hash(path, params, amgr->params_size, obj_alloc), 0)};
+  if (asset.id && !(flags & VD__ASSET_LOAD_FLAG_RELOAD))
+  {
+    ++vd__state.asset.assets[sx_handle_index(asset.id)].ref_count;
+  }
+  else
+  {
+    // find resource and resolve the real file path
+    int res_idx = sx_hashtbl_find_get(vd__state.asset.resource_tbl, sx_hash_fnv32_str(path), -1);
+    const char *real_path = path;
+    vd__asset_resource *res = NULL;
+    if (res_idx != -1)
+    {
+      res = &vd__state.asset.resources[res_idx];
+      real_path = res->real_path;
+    }
+
+    if (!(flags & VD__ASSET_LOAD_FLAG_WAIT_ON_LOAD))
+    {
+      // Async load
+      asset = vd__asset_create_new(path, params, amgr->async_obj, name_hash, obj_alloc, flags, tags);
+      vd__asset *a = &vd__state.asset.assets[sx_handle_index(asset.id)];
+      a->state = VD__ASSET_STATE_LOADING;
+
+      vd__asset_async_load_req req =
+        (vd__asset_async_load_req){.path_hash = sx_hash_fnv32_str(real_path), .asset = asset};
+      sx_array_push(vd__state.asset.alloc, vd__state.asset.async_reqs, req);
+
+      vd__vfs_read_async(real_path, (flags & VD__ASSET_LOAD_FLAG_ABSOLUTE_PATH) ? VD__VFS_FLAG_ABSOLUTE_PATH : 0,
+                         vd__vfs_alloc(), vd__asset_on_read, NULL);
+    }
+    else
+    {
+      // Blocking load (+ reloads)
+      asset = vd__asset_add(path, params, amgr->failed_obj, name_hash, obj_alloc, flags, tags,
+                            (flags & VD__ASSET_LOAD_FLAG_RELOAD) ? asset : (vd__asset_handle){0});
+
+      sx_mem_block *mem = vd__vfs_read(
+        real_path, (flags & VD__ASSET_LOAD_FLAG_ABSOLUTE_PATH) ? VD__VFS_FLAG_ABSOLUTE_PATH : 0, vd__vfs_alloc());
+
+      if (!mem)
+      {
+        // vd__asset_errmsg(path, real_path, "opening");
+        return asset;
+      }
+
+      vd__asset *a = &vd__state.asset.assets[sx_handle_index(asset.id)];
+
+      if (!res)
+      {
+        sx_assert(a->resource_id);
+        res = &vd__state.asset.resources[vd__to_index(a->resource_id)];
+      }
+
+      vd__asset_load_params aparams =
+        (vd__asset_load_params){.path = path, .params = params, .alloc = obj_alloc, .tags = tags, .flags = flags};
+
+      bool success = false;
+      char fixed_path[VD__MAX_PATH];
+      vd__asset_meta_keyval *metas;
+      if ((vd__asset_checkandfix_asset_type(mem, path, fixed_path, sizeof(fixed_path), &aparams.num_meta)))
+      {
+        aparams.path = fixed_path;
+        if (aparams.num_meta > 0)
+        {
+          sx_assert(aparams.num_meta < 64);
+          metas = alloca(sizeof(vd__asset_meta_keyval) * aparams.num_meta);
+          sx_assert_always(metas);
+          sx_memcpy(metas, mem->data, sizeof(vd__asset_meta_keyval) * aparams.num_meta);
+          sx_mem_addoffset(mem, sizeof(vd__asset_meta_keyval) * aparams.num_meta);
+          aparams.metas = metas;
+        }
+      }
+
+      vd__asset_load_data load_data = amgr->callbacks.on_prepare(&aparams, mem);
+
+      // revive pointer to asset, because during `on_prepare` some resource dependencies
+      // may be loaded and `assets` array may be resized
+      a = &vd__state.asset.assets[sx_handle_index(asset.id)];
+      if (load_data.obj.id)
+      {
+        if (amgr->callbacks.on_load(&load_data, &aparams, mem))
+        {
+          amgr->callbacks.on_finalize(&load_data, &aparams, mem);
+          success = true;
+        }
+      }
+
+      sx_mem_destroy_block(mem);
+      if (success)
+      {
+        a->state = VD__ASSET_STATE_OK;
+        a->obj = load_data.obj;
+      }
+      else
+      {
+        if (load_data.obj.id)
+          amgr->callbacks.on_release(load_data.obj, a->alloc);
+        // vd__asset_errmsg(path, real_path, "loading");
+        if (a->obj.id && !a->dead_obj.id)
+        {
+          a->state = VD__ASSET_STATE_FAILED;
+        }
+        else
+        {
+          a->obj = a->dead_obj; // rollback
+          a->dead_obj = (vd__asset_obj){.id = 0};
+        }
+      }
+
+      // do we have extra work in reload?
+      if (flags & VD__ASSET_LOAD_FLAG_RELOAD)
+      {
+        amgr->callbacks.on_reload(asset, a->dead_obj, obj_alloc);
+        if (a->dead_obj.id)
+        {
+          amgr->callbacks.on_release(a->dead_obj, obj_alloc);
+          a->dead_obj = (vd__asset_obj){.id = 0};
+        }
+      }
+    }
+  }
+
+  return asset;
+}
+
+static vd__asset_handle vd__asset_load(const char *name, const char *path, const void *params,
+                                       vd__asset_load_flags flags, const sx_alloc *alloc, uint32_t tags)
+{
+  vd__asset_handle asset = vd__asset_load_hashed(sx_hash_fnv32_str(name), path, params, flags, alloc, tags);
+  if (asset.id && vd__state.asset.cur_group.id)
+  {
+    vd__asset_group *g = &vd__state.asset.groups[sx_handle_index(vd__state.asset.cur_group.id)];
+    sx_array_push(vd__state.asset.alloc, g->assets, asset);
+  }
+  return asset;
+}
 
 static void vd__asset_register_asset_type(const char *name, vd__asset_callbacks callbacks, const char *params_type_name,
                                           int params_size, vd__asset_obj failed_obj, vd__asset_obj async_obj,
@@ -2342,7 +2982,7 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
 
   cj5_token tokens[1024];
   const int max_tokens = sizeof(tokens) / sizeof(cj5_token);
-  cj5_result jres = cj5_parse((const char*)mem->data, mem->size, tokens, max_tokens);
+  cj5_result jres = cj5_parse((const char *)mem->data, mem->size, tokens, max_tokens);
   if (jres.error)
   {
     if (jres.error == CJ5_ERROR_OVERFLOW)
@@ -2353,7 +2993,7 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
         sx_out_of_memory();
         return (vd__asset_load_data){{0}};
       }
-      jres = cj5_parse((const char*)mem->data, mem->size - 1, ntokens, jres.num_tokens);
+      jres = cj5_parse((const char *)mem->data, mem->size - 1, ntokens, jres.num_tokens);
       if (jres.error)
       {
         vd__log_error("loading shader reflection failed: invalid json");
@@ -2456,7 +3096,6 @@ JanetSignal vd__app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const
 void vd__app_init()
 {
   vd__core_init(&(vd__config){});
-  vd__vfs_init();
   vd__asset_init();
   vd__script_init();
   vd__gfx_init();
@@ -2465,7 +3104,7 @@ void vd__app_init()
 
   vd__vfs_mount("/assets", "/assets", true);
 
-  // vd__asset_load("doll", "/assets/dolls/ozz_skin.doll", &(vd__doll_load_params){}, 0, NULL, 0);
+  vd__asset_load("doll", "/assets/dolls/ozz_skin.doll", &(vd__doll_load_params){}, 0, NULL, 0);
 
   Janet ret;
   JanetSignal status =
