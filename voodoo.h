@@ -77,13 +77,14 @@ static const JanetReg vd__cfuns[] = {
 #pragma warning(push)
 #endif
 
-#include <emscripten/threading.h>
-
 #include "sx/allocator.h"
 #include "sx/array.h"
 #include "sx/atomic.h"
+#include "sx/handle.h"
 #include "sx/hash.h"
 #include "sx/io.h"
+#include "sx/jobs.h"
+#include "sx/lin-alloc.h"
 #include "sx/lockless.h"
 #include "sx/os.h"
 #include "sx/platform.h"
@@ -91,7 +92,11 @@ static const JanetReg vd__cfuns[] = {
 #include "sx/string.h"
 #include "sx/threads.h"
 #include "sx/vmem.h"
+
 #include "stackwalkerc.h"
+
+#define CJ5_IMPLEMENT
+#include "cj5.h"
 
 #define HANDMADE_MATH_IMPLEMENTATION
 #include "hmm.h"
@@ -124,6 +129,10 @@ int vd__app_height();
 
 #ifndef VD__MAX_PATH
 #define VD__MAX_PATH 256
+#endif
+
+#ifndef VD__CONFIG_ASSET_POOL_SIZE
+#define VD__CONFIG_ASSET_POOL_SIZE 256
 #endif
 
 //    __   ____  _______________  _______
@@ -173,6 +182,156 @@ void (*vd__core_set_log_level)(vd__log_level level);
 // /___/ /_/ /_/|_|\____/\___/ /_/ /___/
 //
 // >>structs
+
+typedef union {
+  uintptr_t id;
+  void *ptr;
+} vd__asset_obj;
+typedef struct
+{
+  uint32_t id;
+} vd__asset_handle;
+typedef struct
+{
+  uint32_t id;
+} vd__asset_group_handle;
+
+enum
+{
+  VD__ASSET_LOAD_FLAG_NONE = 0x0,
+  VD__ASSET_LOAD_FLAG_ABSOLUTE_PATH = 0x1,
+  VD__ASSET_LOAD_FLAG_WAIT_ON_LOAD = 0x2,
+  VD__ASSET_LOAD_FLAG_RELOAD = 0x4
+};
+typedef uint32_t vd__asset_load_flags;
+
+typedef struct
+{
+  char key[32];
+  char value[32];
+} vd__asset_meta_keyval;
+
+typedef struct
+{
+  const char *path;           // path to asset file
+  const void *params;         // must cast to asset-specific implementation type
+  const sx_alloc *alloc;      // allocator that is user sends for loading asset data
+  uint32_t tags;              // user-defined tag bits
+  vd__asset_load_flags flags; // flags that are used for loading
+  uint32_t num_meta;          // meta key-value pairs, embedded in custom _vd__ assets
+  const vd__asset_meta_keyval *metas;
+} vd__asset_load_params;
+
+typedef struct
+{
+  vd__asset_obj obj; // valid internal object
+  void *user1;       // user-data can be allocated and filled with anything specific to asset loader
+  void *user2;       // same as user1
+} vd__asset_load_data;
+
+typedef enum
+{
+  VD__ASSET_STATE_ZOMBIE = 0,
+  VD__ASSET_STATE_OK,
+  VD__ASSET_STATE_FAILED,
+  VD__ASSET_STATE_LOADING
+} vd__asset_state;
+
+typedef struct
+{
+  vd__asset_load_data (*on_prepare)(const vd__asset_load_params *params, const sx_mem_block *mem);
+  bool (*on_load)(vd__asset_load_data *data, const vd__asset_load_params *params, const sx_mem_block *mem);
+  void (*on_finalize)(vd__asset_load_data *data, const vd__asset_load_params *params, const sx_mem_block *mem);
+  void (*on_reload)(vd__asset_handle handle, vd__asset_obj prev_obj, const sx_alloc *alloc);
+  void (*on_release)(vd__asset_obj obj, const sx_alloc *alloc);
+} vd__asset_callbacks;
+
+// fourcc code for embedded asset meta data
+static uint32_t VD__ASSET_FLAG = sx_makefourcc('R', 'I', 'Z', 'Z');
+
+// Asset managers are managers for each type of asset
+// For example, 'texture' has it's own manager, 'model' has it's manager, ...
+// They handle loading, unloading, reloading asset objects
+// They also have metdata and parameters memory containers
+typedef struct vd__asset_mgr
+{
+  char name[32];
+  vd__asset_callbacks callbacks;
+  uint32_t name_hash;
+  int params_size;
+  char params_type_name[32];
+  vd__asset_obj failed_obj;
+  vd__asset_obj async_obj;
+  uint8_t *SX_ARRAY params_buff;     // (byte-array, item-size: params_size)
+  vd__asset_load_flags forced_flags; // these flags are foced upon every load-call
+  bool unreg;
+} vd__asset_mgr;
+
+// Assets consist of files (resource) on disk and load params combination
+// One file may be loaded with different parameters (different allocator, mip-map, LOD, etc.)
+// Each asset is binded to a resource and params data
+typedef struct vd__asset
+{
+  const sx_alloc *alloc;
+  sx_handle_t handle;
+  uint32_t params_id;   // id-to: vd__asset_mgr.params_buff
+  uint32_t resource_id; // id-to: vd__asset_lib.resources
+  int asset_mgr_id;     // index-to: vd__asset_lib.asset_mgrs
+  int ref_count;
+  vd__asset_obj obj;
+  vd__asset_obj dead_obj;
+  uint32_t hash;
+  uint32_t tags;
+  vd__asset_load_flags load_flags;
+  vd__asset_state state;
+} vd__asset;
+
+// Resources are the actual files on the file-system
+// Each resource has a metadata
+// Likely to be populated by asset-db, but can grow on run-time
+typedef struct
+{
+  char path[VD__MAX_PATH];      // path that is referenced in database and code
+  char real_path[VD__MAX_PATH]; // real path on disk, resolved by asset-db and variation
+  uint32_t path_hash;           // hash of 'real_path'
+  uint64_t last_modified;       // last-modified time-stamp
+  int asset_mgr_id;             // index-to: vd__asset_lib.asset_mgrs
+  bool used;
+} vd__asset_resource;
+
+// Async loads are queued for each new async file loads
+// To track which file points to which asset
+typedef struct
+{
+  uint32_t path_hash; // hash of real_path
+  vd__asset asset;
+} vd__asset_async_load_req;
+
+typedef enum
+{
+  VD__ASSET_JOB_STATE_SPAWN = 0,
+  VD__ASSET_JOB_STATE_LOAD_FAILED,
+  VD__ASSET_JOB_STATE_SUCCESS,
+  VD__ASSET_JOB_STATE_COUNT = INT32_MAX
+} vd__asset_job_state;
+
+typedef struct vd__asset_async_job
+{
+  vd__asset_load_data load_data;
+  sx_mem_block *mem;
+  vd__asset_mgr *amgr;
+  vd__asset_load_params lparams;
+  sx_job_t job;
+  vd__asset_job_state state;
+  vd__asset asset;
+  struct vd__asset_async_job *next;
+  struct vd__asset_async_job *prev;
+} vd__asset_async_job;
+
+typedef struct vd__asset_group
+{
+  vd__asset *SX_ARRAY assets;
+} vd__asset_group;
 
 enum
 {
@@ -436,6 +595,28 @@ static struct
 
   struct
   {
+    sx_alloc *alloc; // allocator passed on init
+    char asset_db_file[VD__MAX_PATH];
+    char variation[32];
+    vd__asset_mgr *SX_ARRAY asset_mgrs;
+    uint32_t *SX_ARRAY asset_name_hashes; // (count = count(asset_mgrs))
+    vd__asset *assets;                    // loaded assets
+    sx_handle_pool *asset_handles;
+    sx_hashtbl *asset_tbl;         // key: hash(path+params), value: handle (asset_handles)
+    sx_hashtbl *resource_tbl;      // key  hash(path), value: index-to resources
+    vd__asset_resource *resources; // resource database
+    sx_hash_xxh32_t *hasher;
+    vd__asset_async_load_req *async_reqs;
+    vd__asset_async_job *async_job_list;
+    vd__asset_async_job *async_job_list_last;
+    vd__asset_group *groups;
+    sx_handle_pool *group_handles;
+    vd__asset_group cur_group;
+    sx_lock_t assets_lk; // used for locking assets-array
+  } asset;
+
+  struct
+  {
     const sx_alloc *heap_alloc;
     sx_alloc *alloc;
 
@@ -452,6 +633,20 @@ static struct
 
   struct
   {
+#if SX_PLATFORM_WINDOWS
+    sw_context *sw;
+#endif
+
+    const sx_alloc *alloc;
+    sx_atomic_uint64 debug_mem_size;
+    vd__mem_trace_context *root;
+    vd__mem_capture_context capture;
+    sx_atomic_uint32 in_capture;
+  } mem;
+
+  struct
+  {
+    sx_alloc *alloc;
     struct
     {
       struct
@@ -468,21 +663,8 @@ static struct
 
       vd__dbg_shape shapes[VD__NUM_SHAPES];
 
-    } draw;
-  } dbg;
-
-  struct
-  {
-#if SX_PLATFORM_WINDOWS
-    sw_context *sw;
-#endif
-
-    const sx_alloc *alloc;
-    sx_atomic_uint64 debug_mem_size;
-    vd__mem_trace_context *root;
-    vd__mem_capture_context capture;
-    sx_atomic_uint32 in_capture;
-  } mem;
+    } dbg;
+  } v3d;
 
   struct
   {
@@ -1306,6 +1488,43 @@ static void vd__core_shutdown(void)
 //
 // >>vfs
 
+bool vd__vfs_mount(const char *path, const char *alias, bool watch)
+{
+  sx_unused(watch);
+
+  if (sx_os_path_isdir(path))
+  {
+    vd__vfs_mount_point mp = {0};
+    sx_os_path_normpath(mp.path, sizeof(mp.path), path);
+    sx_os_path_unixpath(mp.alias, sizeof(mp.alias), alias);
+    mp.alias_len = sx_strlen(mp.alias);
+
+    // #if RIZZ_CONFIG_HOT_LOADING
+    //     if (watch)
+    //         mp.watch_id = dmon_watch(mp.path, dmon__event_cb, DMON_WATCHFLAGS_RECURSIVE, NULL).id;
+    // #endif
+
+    // check that the mount path is not already registered
+    for (int i = 0, c = sx_array_count(vd__state.vfs.mounts); i < c; i++)
+    {
+      if (sx_strequal(vd__state.vfs.mounts[i].path, mp.path))
+      {
+        // vd__log_error("(vfs) path '%s' is already mounted on '%s'", mp.path, mp.alias);
+        return false;
+      }
+    }
+
+    sx_array_push(vd__state.vfs.alloc, vd__state.vfs.mounts, mp);
+    // vd__log_info("(vfs) mounted '%s' on '%s'", mp.alias, mp.path);
+    return true;
+  }
+  else
+  {
+    // vd__log_error("(vfs) mount path is not valid: %s", path);
+    return false;
+  }
+}
+
 static bool vd__vfs_resolve_path(char *out_path, int out_path_sz, const char *path, vd__vfs_flags flags)
 {
   if (flags & VD__VFS_FLAG_ABSOLUTE_PATH)
@@ -1481,6 +1700,183 @@ static void vd__vfs_shutdown()
 
   vd__mem_destroy_allocator(vd__state.vfs.alloc);
   vd__state.vfs.alloc = NULL;
+}
+
+//    ___   __________________
+//   / _ | / __/ __/ __/_  __/
+//  / __ |_\ \_\ \/ _/  / /
+// /_/ |_/___/___/___/ /_/
+//
+// >>asset
+
+static void vd__asset_register_asset_type(const char *name, vd__asset_callbacks callbacks, const char *params_type_name,
+                                          int params_size, vd__asset_obj failed_obj, vd__asset_obj async_obj,
+                                          vd__asset_load_flags forced_flags)
+{
+  uint32_t name_hash = sx_hash_fnv32_str(name);
+  for (int i = 0; i < sx_array_count(vd__state.asset.asset_name_hashes); i++)
+  {
+    if (name_hash == vd__state.asset.asset_name_hashes[i])
+    {
+      sx_assertf(0, "asset manager already registered");
+      return;
+    }
+  }
+
+  vd__asset_mgr amgr = {.callbacks = callbacks,
+                        .name_hash = name_hash,
+                        .params_size = params_size,
+                        .failed_obj = failed_obj,
+                        .async_obj = async_obj,
+                        .forced_flags = forced_flags};
+  sx_strcpy(amgr.name, sizeof(amgr.name), name);
+  sx_strcpy(amgr.params_type_name, sizeof(amgr.params_type_name), params_type_name ? params_type_name : "");
+
+  sx_array_push(vd__state.asset.alloc, vd__state.asset.asset_mgrs, amgr);
+  sx_array_push(vd__state.asset.alloc, vd__state.asset.asset_name_hashes, name_hash);
+}
+
+static void vd__asset_init()
+{
+  vd__state.asset.alloc = vd__mem_create_allocator("asset", VD__MEMOPTION_INHERIT, "core", vd__core_heap_alloc());
+
+  // the__vfs.register_modify(rizz__asset_on_modified);
+
+  vd__state.asset.asset_tbl = sx_hashtbl_create(vd__state.asset.alloc, VD__CONFIG_ASSET_POOL_SIZE);
+  vd__state.asset.resource_tbl = sx_hashtbl_create(vd__state.asset.alloc, VD__CONFIG_ASSET_POOL_SIZE);
+  sx_assert(vd__state.asset.asset_tbl);
+
+  vd__state.asset.asset_handles = sx_handle_create_pool(vd__state.asset.alloc, VD__CONFIG_ASSET_POOL_SIZE);
+  sx_assert(vd__state.asset.asset_handles);
+
+  vd__state.asset.group_handles = sx_handle_create_pool(vd__state.asset.alloc, 32);
+  sx_assert(vd__state.asset.group_handles);
+
+  vd__state.asset.hasher = sx_hash_create_xxh32(vd__state.asset.alloc);
+  sx_assert(vd__state.asset.hasher);
+}
+
+//   __________  __
+//  / ___/ __/ |/_/
+// / (_ / _/_>  <
+// \___/_/ /_/|_|
+//
+// >>gfx
+
+sg_buffer vd__gfx_buffer_append(sg_buffer buf, size_t size, const void *data, int *offset)
+{
+  if (buf.id == SG_INVALID_ID || sg_query_buffer_will_overflow(buf, size))
+  {
+    sg_buffer_info bi = sg_query_buffer_info(buf);
+    buf = sg_make_buffer(&(sg_buffer_desc){.size = bi.append_pos + size, .usage = SG_USAGE_STREAM});
+  }
+  *offset = sg_append_buffer(buf, &(sg_range){.ptr = data, .size = size});
+  return buf;
+}
+
+void vd__gfx_init()
+{
+  sg_setup(&(sg_desc){
+    .context = sapp_sgcontext(),
+    .logger.func = slog_func,
+  });
+
+  sgl_setup(&(sgl_desc_t){
+    .logger.func = slog_func,
+  });
+
+  ozz_setup(&(ozz_desc_t){.max_palette_joints = 64, .max_instances = 1});
+
+  sg_image_desc img_desc = (sg_image_desc){
+    .render_target = true,
+    .width = sapp_width(),
+    .height = sapp_height(),
+    .pixel_format = SG_PIXELFORMAT_RGBA32F,
+  };
+
+  sg_image_desc depth_desc = img_desc;
+  depth_desc.pixel_format = SG_PIXELFORMAT_DEPTH;
+}
+
+static void vd__gfx_shutdown()
+{
+  sgl_shutdown();
+  sg_shutdown();
+}
+
+//    ____________  _______  ______
+//   / __/ ___/ _ \/  _/ _ \/_  __/
+//  _\ \/ /__/ , _// // ___/ / /
+// /___/\___/_/|_/___/_/    /_/
+//
+// >>script
+
+static void vd__app_init();
+static void vd__app_shutdown();
+
+typedef struct
+{
+  bool error;
+  const char *script_src;
+  const char *error_msg;
+} vd__compilation_result;
+
+EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
+{
+  vd__app_shutdown();
+  vd__app_init();
+  return 1;
+}
+
+static void vd__janet_cdefs(JanetTable *env)
+{
+  janet_def(env, "voodoo/vfs-flag-none", janet_wrap_integer(VD__VFS_FLAG_NONE), "0x01");
+  janet_def(env, "voodoo/vfs-flag-abs-path", janet_wrap_integer(VD__VFS_FLAG_ABSOLUTE_PATH), "0x02");
+  janet_def(env, "voodoo/vfs-flag-txt-file", janet_wrap_integer(VD__VFS_FLAG_TEXT_FILE), "0x04");
+  janet_def(env, "voodoo/vfs-flag-append", janet_wrap_integer(VD__VFS_FLAG_APPEND), "0x08");
+}
+
+static void vd__script_init(void)
+{
+  janet_init();
+  JanetTable *core_env = janet_core_env(NULL);
+  JanetTable *lookup = janet_env_lookup(core_env);
+
+  vd__janet_cdefs(core_env);
+  janet_cfuns(core_env, NULL, vd__cfuns);
+
+  const char *str = sx_os_path_exists("/voodoo/game.janet") ? "(setdyn :syspath \"./voodoo\")\n"
+                                                              "(import game :prefix \"\")\n"
+                                                              "(voodoo)"
+                                                            : "(setdyn :syspath \"./assets/scripts\")\n"
+                                                              "(import game :prefix \"\")\n"
+                                                              "(voodoo)";
+  Janet ret;
+  JanetSignal status = janet_dostring(core_env, str, "main", &ret);
+
+  if (status == JANET_SIGNAL_ERROR)
+  {
+    fprintf(stderr, "missing run argument");
+    sargs_shutdown();
+    exit(1);
+  }
+
+  JanetTable *cfg = janet_unwrap_table(ret);
+  vd__state.app.width = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("width")));
+  vd__state.app.height = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("height")));
+  vd__state.app.mod_init_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("init")));
+  vd__state.app.mod_event_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("event")));
+  vd__state.app.mod_update_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("update")));
+  vd__state.app.mod_shutdown_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("shutdown")));
+  janet_gcroot(janet_wrap_function(vd__state.app.mod_init_cb));
+  janet_gcroot(janet_wrap_function(vd__state.app.mod_event_cb));
+  janet_gcroot(janet_wrap_function(vd__state.app.mod_update_cb));
+  janet_gcroot(janet_wrap_function(vd__state.app.mod_shutdown_cb));
+}
+
+static void vd__script_shutdown(void)
+{
+  janet_deinit();
 }
 
 //   ________   __  __________  ___
@@ -1698,52 +2094,6 @@ static Janet cfun_vd_cam_new(int32_t argc, Janet *argv)
   return janet_wrap_abstract(cam);
 }
 
-//   __________  __
-//  / ___/ __/ |/_/
-// / (_ / _/_>  <
-// \___/_/ /_/|_|
-//
-// >>gfx
-
-sg_buffer vd__gfx_buffer_append(sg_buffer buf, size_t size, const void *data, int *offset)
-{
-  if (buf.id == SG_INVALID_ID || sg_query_buffer_will_overflow(buf, size))
-  {
-    sg_buffer_info bi = sg_query_buffer_info(buf);
-    buf = sg_make_buffer(&(sg_buffer_desc){.size = bi.append_pos + size, .usage = SG_USAGE_STREAM});
-  }
-  *offset = sg_append_buffer(buf, &(sg_range){.ptr = data, .size = size});
-  return buf;
-}
-
-void vd__gfx_init()
-{
-  sg_setup(&(sg_desc){
-    .context = sapp_sgcontext(),
-    .logger.func = slog_func,
-  });
-
-  sgl_setup(&(sgl_desc_t){
-    .logger.func = slog_func,
-  });
-
-  sg_image_desc img_desc = (sg_image_desc){
-    .render_target = true,
-    .width = sapp_width(),
-    .height = sapp_height(),
-    .pixel_format = SG_PIXELFORMAT_RGBA32F,
-  };
-
-  sg_image_desc depth_desc = img_desc;
-  depth_desc.pixel_format = SG_PIXELFORMAT_DEPTH;
-}
-
-static void vd__gfx_shutdown()
-{
-  sgl_shutdown();
-  sg_shutdown();
-}
-
 //    ___  _______  __  _______  ___  ___  ___ _      __
 //   / _ \/ __/ _ )/ / / / ___/ / _ \/ _ \/ _ | | /| / /
 //  / // / _// _  / /_/ / (_ / / // / , _/ __ | |/ |/ /
@@ -1792,37 +2142,36 @@ void vd__dbg_draw_ground(float scale)
 void vd__dbg_draw_cube(HMM_Vec3 pos)
 {
   HMM_Mat4 transform = HMM_Translate(pos);
-  vd__state.dbg.draw.transform.buf = vd__gfx_buffer_append(vd__state.dbg.draw.transform.buf, sizeof(HMM_Mat4),
-                                                           &transform, &vd__state.dbg.draw.transform.offset);
+  vd__state.v3d.dbg.transform.buf = vd__gfx_buffer_append(vd__state.v3d.dbg.transform.buf, sizeof(HMM_Mat4), &transform,
+                                                          &vd__state.v3d.dbg.transform.offset);
 }
 
 void vd__dbg_draw_camera(vd__camera *cam)
 {
-  vd__state.dbg.draw.vp = cam->view_proj;
+  vd__state.v3d.dbg.vp = cam->view_proj;
 }
 
 void vd__dbg_draw()
 {
   /* NOTE: the vs_params_t struct has been code-generated by the shader-code-gen */
   vs_params_t vs_params;
-  vs_params.vp = vd__state.dbg.draw.vp;
+  vs_params.vp = vd__state.v3d.dbg.vp;
 
-  sgl_load_matrix(&vd__state.dbg.draw.vp.Elements[0][0]);
+  sgl_load_matrix(&vd__state.v3d.dbg.vp.Elements[0][0]);
 
   sg_pass_action pass_action = {
     .colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0.13f, 0.13f, 0.13f, 1.0f}}};
   sg_begin_default_pass(&pass_action, sapp_width(), sapp_height());
 
-  sg_apply_pipeline(vd__state.dbg.draw.pip);
+  sg_apply_pipeline(vd__state.v3d.dbg.pip);
 
-  sg_apply_bindings(&(sg_bindings){.vertex_buffers[0] = vd__state.dbg.draw.vtx_buf,
-                                   .vertex_buffers[1] = vd__state.dbg.draw.transform.buf,
-                                   .vertex_buffer_offsets[1] = vd__state.dbg.draw.transform.offset,
-                                   .index_buffer = vd__state.dbg.draw.idx_buf});
+  sg_apply_bindings(&(sg_bindings){.vertex_buffers[0] = vd__state.v3d.dbg.vtx_buf,
+                                   .vertex_buffers[1] = vd__state.v3d.dbg.transform.buf,
+                                   .vertex_buffer_offsets[1] = vd__state.v3d.dbg.transform.offset,
+                                   .index_buffer = vd__state.v3d.dbg.idx_buf});
 
   sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(vs_params));
-  sg_draw(vd__state.dbg.draw.shapes[VD__BOX].draw.base_element, vd__state.dbg.draw.shapes[VD__BOX].draw.num_elements,
-          1);
+  sg_draw(vd__state.v3d.dbg.shapes[VD__BOX].draw.base_element, vd__state.v3d.dbg.shapes[VD__BOX].draw.num_elements, 1);
   sgl_draw();
   sg_end_pass();
   sg_commit();
@@ -1831,11 +2180,11 @@ void vd__dbg_draw()
 void vd__dbg_draw_init()
 {
   /* create shader */
-  vd__state.dbg.draw.shd = sg_make_shader(shapes_shader_desc(sg_query_backend()));
+  vd__state.v3d.dbg.shd = sg_make_shader(shapes_shader_desc(sg_query_backend()));
 
   /* create pipeline object */
-  vd__state.dbg.draw.pip = sg_make_pipeline(&(sg_pipeline_desc){
-    .shader = vd__state.dbg.draw.shd,
+  vd__state.v3d.dbg.pip = sg_make_pipeline(&(sg_pipeline_desc){
+    .shader = vd__state.v3d.dbg.shd,
     .layout = {.buffers = {[0] = sshape_vertex_buffer_layout_state(),
                            [1] = {.stride = sizeof(HMM_Mat4), .step_func = SG_VERTEXSTEP_PER_INSTANCE}},
                .attrs = {[0] = sshape_position_vertex_attr_state(),
@@ -1864,21 +2213,21 @@ void vd__dbg_draw_init()
                                  .tiles = 10,
                                  .random_colors = true,
                                });
-  vd__state.dbg.draw.shapes[VD__BOX].draw = sshape_element_range(&buf);
+  vd__state.v3d.dbg.shapes[VD__BOX].draw = sshape_element_range(&buf);
   buf = sshape_build_plane(&buf, &(sshape_plane_t){
                                    .width = 1.0f,
                                    .depth = 1.0f,
                                    .tiles = 10,
                                    .random_colors = true,
                                  });
-  vd__state.dbg.draw.shapes[VD__PLANE].draw = sshape_element_range(&buf);
+  vd__state.v3d.dbg.shapes[VD__PLANE].draw = sshape_element_range(&buf);
   buf = sshape_build_sphere(&buf, &(sshape_sphere_t){
                                     .radius = 0.75f,
                                     .slices = 36,
                                     .stacks = 20,
                                     .random_colors = true,
                                   });
-  vd__state.dbg.draw.shapes[VD__SPHERE].draw = sshape_element_range(&buf);
+  vd__state.v3d.dbg.shapes[VD__SPHERE].draw = sshape_element_range(&buf);
   buf = sshape_build_cylinder(&buf, &(sshape_cylinder_t){
                                       .radius = 0.5f,
                                       .height = 1.5f,
@@ -1886,7 +2235,7 @@ void vd__dbg_draw_init()
                                       .stacks = 10,
                                       .random_colors = true,
                                     });
-  vd__state.dbg.draw.shapes[VD__CYLINDER].draw = sshape_element_range(&buf);
+  vd__state.v3d.dbg.shapes[VD__CYLINDER].draw = sshape_element_range(&buf);
   buf = sshape_build_torus(&buf, &(sshape_torus_t){
                                    .radius = 0.5f,
                                    .ring_radius = 0.3f,
@@ -1894,14 +2243,14 @@ void vd__dbg_draw_init()
                                    .sides = 18,
                                    .random_colors = true,
                                  });
-  vd__state.dbg.draw.shapes[VD__TORUS].draw = sshape_element_range(&buf);
+  vd__state.v3d.dbg.shapes[VD__TORUS].draw = sshape_element_range(&buf);
   assert(buf.valid);
 
   // one vertex/index-buffer-pair for all shapes
   const sg_buffer_desc vbuf_desc = sshape_vertex_buffer_desc(&buf);
   const sg_buffer_desc ibuf_desc = sshape_index_buffer_desc(&buf);
-  vd__state.dbg.draw.vtx_buf = sg_make_buffer(&vbuf_desc);
-  vd__state.dbg.draw.idx_buf = sg_make_buffer(&ibuf_desc);
+  vd__state.v3d.dbg.vtx_buf = sg_make_buffer(&vbuf_desc);
+  vd__state.v3d.dbg.idx_buf = sg_make_buffer(&ibuf_desc);
 }
 
 static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv)
@@ -1938,79 +2287,129 @@ static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv)
   return janet_wrap_nil();
 }
 
-//    ____________  _______  ______
-//   / __/ ___/ _ \/  _/ _ \/_  __/
-//  _\ \/ /__/ , _// // ___/ / /
-// /___/\___/_/|_/___/_/    /_/
+//   _   ______ ___
+//  | | / /_  // _ \
+//  | |/ //_ </ // /
+//  |___/____/____/
 //
-// >>script
-
-static void vd__app_init();
-static void vd__app_shutdown();
+// >>v3d
 
 typedef struct
 {
-  bool error;
-  const char *script_src;
-  const char *error_msg;
-} vd__compilation_result;
+} vd__animation_load_params;
 
-EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
+typedef struct
 {
-  vd__app_shutdown();
-  vd__app_init();
-  return 1;
+} vd__skeleton_load_params;
+
+typedef struct
+{
+} vd__mesh_load_params;
+
+typedef struct
+{
+
+} vd__doll_load_params;
+
+static vd__asset_load_data vd__v3d_skeleton_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
+{
+  const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
+  return (vd__asset_load_data){{0}};
 }
 
-static void vd__janet_cdefs(JanetTable *env)
+static bool vd__v3d_skeleton_on_load(vd__asset_load_data *data, const vd__asset_load_params *params,
+                                     const sx_mem_block *mem)
 {
-  janet_def(env, "voodoo/vfs-flag-none", janet_wrap_integer(VD__VFS_FLAG_NONE), "0x01");
-  janet_def(env, "voodoo/vfs-flag-abs-path", janet_wrap_integer(VD__VFS_FLAG_ABSOLUTE_PATH), "0x02");
-  janet_def(env, "voodoo/vfs-flag-txt-file", janet_wrap_integer(VD__VFS_FLAG_TEXT_FILE), "0x04");
-  janet_def(env, "voodoo/vfs-flag-append", janet_wrap_integer(VD__VFS_FLAG_APPEND), "0x08");
+  return true;
 }
 
-static void vd__script_init(void)
+static void vd__v3d_skeleton_on_finalize(vd__asset_load_data *data, const vd__asset_load_params *params,
+                                         const sx_mem_block *mem)
 {
-  janet_init();
-  JanetTable *core_env = janet_core_env(NULL);
-  JanetTable *lookup = janet_env_lookup(core_env);
+}
 
-  vd__janet_cdefs(core_env);
-  janet_cfuns(core_env, NULL, vd__cfuns);
+static void vd__v3d_skeleton_on_reload(vd__asset_handle handle, vd__asset_obj prev_obj, const sx_alloc *alloc)
+{
+}
 
-  const char *str = sx_os_path_exists("/voodoo/game.janet") ? "(setdyn :syspath \"./voodoo\")\n"
-                                                   "(import game :prefix \"\")\n"
-                                                   "(voodoo)"
-                                                 : "(setdyn :syspath \"./assets/scripts\")\n"
-                                                   "(import game :prefix \"\")\n"
-                                                   "(voodoo)";
-  Janet ret;
-  JanetSignal status = janet_dostring(core_env, str, "main", &ret);
+static void vd__v3d_skeleton_on_release(vd__asset_obj obj, const sx_alloc *alloc)
+{
+}
 
-  if (status == JANET_SIGNAL_ERROR)
+static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
+{
+  const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
+
+  cj5_token tokens[1024];
+  const int max_tokens = sizeof(tokens) / sizeof(cj5_token);
+  cj5_result jres = cj5_parse((const char*)mem->data, mem->size, tokens, max_tokens);
+  if (jres.error)
   {
-    fprintf(stderr, "missing run argument");
-    sargs_shutdown();
-    exit(1);
+    if (jres.error == CJ5_ERROR_OVERFLOW)
+    {
+      cj5_token *ntokens = (cj5_token *)sx_malloc(alloc, sizeof(cj5_token) * jres.num_tokens);
+      if (!ntokens)
+      {
+        sx_out_of_memory();
+        return (vd__asset_load_data){{0}};
+      }
+      jres = cj5_parse((const char*)mem->data, mem->size - 1, ntokens, jres.num_tokens);
+      if (jres.error)
+      {
+        vd__log_error("loading shader reflection failed: invalid json");
+        return (vd__asset_load_data){{0}};
+      }
+    }
+
+    vd__log_error("loading shader reflection failed: invalid json, line: %d", jres.error_line);
   }
 
-  JanetTable *cfg = janet_unwrap_table(ret);
-  vd__state.app.width = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("width")));
-  vd__state.app.height = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("height")));
-  vd__state.app.mod_init_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("init")));
-  vd__state.app.mod_event_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("event")));
-  vd__state.app.mod_update_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("update")));
-  vd__state.app.mod_shutdown_cb = janet_unwrap_function(janet_table_rawget(cfg, janet_ckeywordv("shutdown")));
-  janet_gcroot(janet_wrap_function(vd__state.app.mod_init_cb));
-  janet_gcroot(janet_wrap_function(vd__state.app.mod_event_cb));
-  janet_gcroot(janet_wrap_function(vd__state.app.mod_update_cb));
-  janet_gcroot(janet_wrap_function(vd__state.app.mod_shutdown_cb));
+  return (vd__asset_load_data){{0}};
 }
 
-static void vd__script_shutdown(void)
+static bool vd__v3d_doll_on_load(vd__asset_load_data *data, const vd__asset_load_params *params,
+                                 const sx_mem_block *mem)
 {
-  janet_deinit();
+  return true;
+}
+
+static void vd__v3d_doll_on_finalize(vd__asset_load_data *data, const vd__asset_load_params *params,
+                                     const sx_mem_block *mem)
+{
+}
+
+static void vd__v3d_doll_on_reload(vd__asset_handle handle, vd__asset_obj prev_obj, const sx_alloc *alloc)
+{
+}
+
+static void vd__v3d_doll_on_release(vd__asset_obj obj, const sx_alloc *alloc)
+{
+}
+
+static void vd__v3d_init()
+{
+  vd__state.v3d.alloc = vd__mem_create_allocator("v3d", VD__MEMOPTION_INHERIT, NULL, vd__core_heap_alloc());
+
+  vd__asset_register_asset_type("skeleton",
+                                (vd__asset_callbacks){
+                                  .on_prepare = vd__v3d_skeleton_on_prepare,
+                                  .on_load = vd__v3d_skeleton_on_load,
+                                  .on_finalize = vd__v3d_skeleton_on_finalize,
+                                  .on_release = vd__v3d_skeleton_on_release,
+                                  .on_reload = vd__v3d_skeleton_on_reload,
+                                },
+                                "vd__skeleton_load_params", sizeof(vd__skeleton_load_params), (vd__asset_obj){},
+                                (vd__asset_obj){}, 0);
+  vd__asset_register_asset_type("doll",
+                                (vd__asset_callbacks){
+                                  .on_prepare = vd__v3d_doll_on_prepare,
+                                  .on_load = vd__v3d_doll_on_load,
+                                  .on_finalize = vd__v3d_doll_on_finalize,
+                                  .on_release = vd__v3d_doll_on_release,
+                                  .on_reload = vd__v3d_doll_on_reload,
+                                },
+                                "vd__doll_load_params", sizeof(vd__doll_load_params), (vd__asset_obj){},
+                                (vd__asset_obj){}, 0);
 }
 
 //    ___   ___  ___
@@ -2058,9 +2457,15 @@ void vd__app_init()
 {
   vd__core_init(&(vd__config){});
   vd__vfs_init();
+  vd__asset_init();
   vd__script_init();
   vd__gfx_init();
+  vd__v3d_init();
   vd__dbg_draw_init();
+
+  vd__vfs_mount("/assets", "/assets", true);
+
+  // vd__asset_load("doll", "/assets/dolls/ozz_skin.doll", &(vd__doll_load_params){}, 0, NULL, 0);
 
   Janet ret;
   JanetSignal status =
