@@ -3110,29 +3110,30 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
   const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
 
   printf("doll content: %s\n", mem->data);
-  cj5_token tokens[1024];
-  const int max_tokens = sizeof(tokens) / sizeof(cj5_token);
-  cj5_result jres = cj5_parse((const char *)mem->data, mem->size, tokens, max_tokens);
-  if (jres.error)
-  {
-    if (jres.error == CJ5_ERROR_OVERFLOW)
-    {
-      cj5_token *ntokens = (cj5_token *)sx_malloc(alloc, sizeof(cj5_token) * jres.num_tokens);
-      if (!ntokens)
-      {
-        sx_out_of_memory();
-        return (vd__asset_load_data){{0}};
-      }
-      jres = cj5_parse((const char *)mem->data, mem->size - 1, ntokens, jres.num_tokens);
-      if (jres.error)
-      {
-        vd__log_error("loading shader reflection failed: invalid json");
-        return (vd__asset_load_data){{0}};
-      }
-    }
+  
+  // cj5_token tokens[1024];
+  // const int max_tokens = sizeof(tokens) / sizeof(cj5_token);
+  // cj5_result jres = cj5_parse((const char *)mem->data, mem->size, tokens, max_tokens);
+  // if (jres.error)
+  // {
+  //   if (jres.error == CJ5_ERROR_OVERFLOW)
+  //   {
+  //     cj5_token *ntokens = (cj5_token *)sx_malloc(alloc, sizeof(cj5_token) * jres.num_tokens);
+  //     if (!ntokens)
+  //     {
+  //       sx_out_of_memory();
+  //       return (vd__asset_load_data){{0}};
+  //     }
+  //     jres = cj5_parse((const char *)mem->data, mem->size - 1, ntokens, jres.num_tokens);
+  //     if (jres.error)
+  //     {
+  //       vd__log_error("loading shader reflection failed: invalid json");
+  //       return (vd__asset_load_data){{0}};
+  //     }
+  //   }
 
-    vd__log_error("loading shader reflection failed: invalid json, line: %d", jres.error_line);
-  }
+  //   vd__log_error("loading shader reflection failed: invalid json, line: %d", jres.error_line);
+  // }
 
   return (vd__asset_load_data){{0}};
 }
