@@ -174,7 +174,6 @@ const Module = {
         0
       );
       Module.FS.close(entryScriptFile);
-      Module.FS.syncfs(true, function (err) {});
       
       Module.editor = new EditorView({
         extensions: [
