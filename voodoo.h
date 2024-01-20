@@ -362,7 +362,7 @@ typedef struct
   int job_max_fibers;
   int job_stack_size;
 
-  int tmp_mem_max
+  int tmp_mem_max;
 } vd__config;
 
 typedef struct vd__tmp_alloc vd__tmp_alloc;
@@ -1042,6 +1042,23 @@ static void vd__mem_create_trace_item(vd__mem_trace_context *ctx, void *ptr, voi
   }
 }
 
+static void vd__mem_trace_context_clear(vd__mem_trace_context *ctx)
+{
+  vd__mem_trace_context_mutex_enter(ctx->options, ctx->mtx);
+  vd__mem_item *item = ctx->items_list;
+  while (item)
+  {
+    vd__mem_item *next = item->next;
+    sx_pool_del(ctx->item_pool, item);
+    item = next;
+  }
+
+  ctx->items_list = NULL;
+  ctx->num_items = 0;
+  ctx->alloc_size = 0;
+  vd__mem_trace_context_mutex_exit(ctx->options, ctx->mtx);
+}
+
 static void *vd__mem_alloc_cb(void *ptr, size_t size, uint32_t align, const char *file, const char *func, uint32_t line,
                               void *user_data)
 {
@@ -1069,6 +1086,12 @@ sx_alloc *vd__mem_create_allocator(const char *name, uint32_t mem_opts, const ch
   }
 
   return NULL;
+}
+
+void vd__mem_allocator_clear_trace(sx_alloc *alloc)
+{
+  vd__mem_trace_context *ctx = alloc->user_data;
+  vd__mem_trace_context_clear(ctx);
 }
 
 static void vd__mem_destroy_trace_context(vd__mem_trace_context *ctx)
@@ -1208,6 +1231,40 @@ static void vd__mem_shutdown(void)
   }
 
   sx_mutex_release(&vd__state.mem.capture.mtx);
+}
+
+void vd__mem_merge_peak(sx_alloc *alloc1, sx_alloc *alloc2)
+{
+  vd__mem_trace_context *ctx1 = alloc1->user_data;
+  vd__mem_trace_context *ctx2 = alloc2->user_data;
+
+  int64_t max_peak = sx_max(ctx1->peak_size, ctx2->peak_size);
+  ctx1->peak_size = max_peak;
+  ctx2->peak_size = max_peak;
+}
+
+void vd__mem_enable_trace(sx_alloc *alloc)
+{
+  vd__mem_trace_context *ctx = alloc->user_data;
+  ctx->disabled = false;
+}
+
+void vd__mem_disable_trace(sx_alloc *alloc)
+{
+  vd__mem_trace_context *ctx = alloc->user_data;
+  ctx->disabled = true;
+}
+
+void vd__mem_enable_trace_view(sx_alloc *alloc)
+{
+  vd__mem_trace_context *ctx = alloc->user_data;
+  ctx->viewDisabled = false;
+}
+
+void vd__mem_disable_trace_view(sx_alloc *alloc)
+{
+  vd__mem_trace_context *ctx = alloc->user_data;
+  ctx->viewDisabled = true;
 }
 
 void vd__mem_set_view_name(sx_alloc *alloc, const char *name)
@@ -1477,17 +1534,17 @@ static void vd__core_update(void)
       }
     }
 
-    // if (vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR)
-    // {
-    //   sx_assert(tmpalloc->tracer_front && tmpalloc->tracer_back);
-    //   sx_swap(tmpalloc->tracer_front, tmpalloc->tracer_back, sx_alloc *);
-    //   vd__mem_allocator_clear_trace(tmpalloc->tracer_front);
-    //   vd__mem_merge_peak(tmpalloc->tracer_front, tmpalloc->tracer_back);
-    //   vd__mem_disable_trace(tmpalloc->tracer_back);
-    //   vd__mem_enable_trace_view(tmpalloc->tracer_back);
-    //   vd__mem_enable_trace(tmpalloc->tracer_front);
-    //   vd__mem_disable_trace_view(tmpalloc->tracer_front);
-    // }
+    if (vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR)
+    {
+      sx_assert(tmpalloc->tracer_front && tmpalloc->tracer_back);
+      sx_swap(tmpalloc->tracer_front, tmpalloc->tracer_back, sx_alloc *);
+      vd__mem_allocator_clear_trace(tmpalloc->tracer_front);
+      vd__mem_merge_peak(tmpalloc->tracer_front, tmpalloc->tracer_back);
+      vd__mem_disable_trace(tmpalloc->tracer_back);
+      vd__mem_enable_trace_view(tmpalloc->tracer_back);
+      vd__mem_enable_trace(tmpalloc->tracer_front);
+      vd__mem_disable_trace_view(tmpalloc->tracer_front);
+    }
   }
   sx_mutex_exit(&vd__state.core.tmp_allocs_mtx);
 
@@ -1525,7 +1582,7 @@ static void vd__core_init(const vd__config *conf)
     (conf->core_flags & VD__CORE_FLAG_DETECT_LEAKS) ? sx_alloc_malloc_leak_detect() : sx_alloc_malloc();
 
   // vd__mem_init(VD__MEMOPTION_TRACE_CALLSTACK | VD__MEMOPTION_MULTITHREAD);
-  vd__mem_init(VD__MEMOPTION_MULTITHREAD);
+  vd__mem_init(VD__MEMOPTION_TRACE_CALLSTACK | VD__MEMOPTION_MULTITHREAD);
 
   vd__state.core.alloc = vd__mem_create_allocator("core", VD__MEMOPTION_INHERIT, NULL, vd__state.core.heap_alloc);
   sx_assert_alwaysf(vd__state.core.alloc, "Fatal error: could not create core allocator");
@@ -1545,10 +1602,12 @@ static void vd__core_init(const vd__config *conf)
   if (vd__state.core.flags & VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR)
   {
     // vd__log_info("(init) using debug temp allocators");
+    printf("(init) using debug temp allocators\n");
   }
   else if (vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR)
   {
     // vd__log_info("(init) using memory tracing in temp allocators");
+    printf("(init) using memory tracing in temp allocators\n");
   }
 
   if (vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR)
@@ -1599,7 +1658,7 @@ static void vd__core_shutdown(void)
   vd__mem_destroy_allocator(vd__state.core.alloc);
   vd__mem_shutdown();
 
-  // sx_memset(&vd__state.core, 0x0, sizeof(vd__state.core));
+  sx_memset(&vd__state.core, 0x0, sizeof(vd__state.core));
 }
 
 //   _   __________
@@ -1659,6 +1718,7 @@ bool vd__vfs_mount(const char *path, const char *alias, bool watch)
     }
 
     sx_array_push(vd__state.vfs.alloc, vd__state.vfs.mounts, mp);
+    printf("(vfs) mounted '%s' on '%s'\n", mp.alias, mp.path);
     // vd__log_info("(vfs) mounted '%s' on '%s'", mp.alias, mp.path);
     return true;
   }
@@ -1705,8 +1765,8 @@ static sx_mem_block *vd__vfs_read(const char *path, vd__vfs_flags flags, const s
   char resolved_path[VD__MAX_PATH];
   vd__vfs_resolve_path(resolved_path, sizeof(resolved_path), path, flags);
 
-  return !(flags & VD__VFS_FLAG_TEXT_FILE) ? sx_file_load_bin(alloc, resolved_path)
-                                           : sx_file_load_text(alloc, resolved_path);
+  return (flags & VD__VFS_FLAG_TEXT_FILE) ? sx_file_load_text(alloc, resolved_path)
+                                          : sx_file_load_bin(alloc, resolved_path);
 }
 
 static int64_t vd__vfs_write(const char *path, const sx_mem_block *mem, vd__vfs_flags flags)
@@ -1810,7 +1870,7 @@ static int vd__vfs_worker(void *user)
 
 static void vd__vfs_init()
 {
-  vd__state.vfs.alloc = vd__mem_create_allocator("vfs", VD__MEMOPTION_INHERIT, "core", vd__core_heap_alloc());
+  vd__state.vfs.alloc = vd__mem_create_allocator("vfs", VD__MEMOPTION_INHERIT, "core", vd__state.core.heap_alloc);
 
   vd__state.vfs.req_queue = sx_queue_spsc_create(vd__state.vfs.alloc, sizeof(vd__vfs_async_request), 128);
   vd__state.vfs.res_queue = sx_queue_spsc_create(vd__state.vfs.alloc, sizeof(vd__vfs_async_response), 128);
@@ -1980,6 +2040,7 @@ static void vd__asset_on_read(const char *path, sx_mem_block *mem, void *user)
       vd__asset_mgr *amgr = &vd__state.asset.asset_mgrs[a->asset_mgr_id];
 
       // vd__asset_errmsg(res->path, res->real_path, "opening");
+      printf("failed opening asset: %s\n", res->path);
       a->state = VD__ASSET_STATE_FAILED;
       a->obj = amgr->failed_obj;
 
@@ -2456,7 +2517,7 @@ static void vd__asset_init()
   sx_assert(vd__state.asset.hasher);
 }
 
-void vd__asset_release()
+void vd__asset_shutdown()
 {
   if (!vd__state.asset.alloc)
     return;
@@ -2708,7 +2769,7 @@ static float vd__cam_def(float val, float def)
 
 static void vd__cam_init(vd__camera *cam, const vd__camera_desc *desc)
 {
-  assert(cam && desc);
+  assert(desc);
   memset(cam, 0, sizeof(vd__camera));
   cam->min_dist = vd__cam_def(desc->min_dist, CAMERA_DEFAULT_MIN_DIST);
   cam->max_dist = vd__cam_def(desc->max_dist, CAMERA_DEFAULT_MAX_DIST);
@@ -2850,16 +2911,18 @@ static Janet cfun_vd_cam_new(int32_t argc, Janet *argv)
   janet_fixarity(argc, 1);
   JanetTable *desc = janet_gettable(argv, 0);
   vd__camera *cam = janet_abstract(&vd__cam_camera, sizeof(vd__camera));
-  vd__cam_init(cam, &(vd__camera_desc){
-                      .min_dist = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("min-dist"))),
-                      .max_dist = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("max-dist"))),
-                      .center = vd__unwrap_vec3(janet_table_rawget(desc, janet_ckeywordv("center"))),
-                      .distance = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("distance"))),
-                      .latitude = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("latitude"))),
-                      .longitude = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("longitude"))),
-                      .nearz = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("nearz"))),
-                      .farz = janet_unwrap_number(janet_table_rawget(desc, janet_ckeywordv("farz"))),
-                    });
+  vd__camera_desc cd = (vd__camera_desc){
+    .min_dist = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("min-dist"))),
+    .max_dist = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("max-dist"))),
+    .center = vd__unwrap_vec3(janet_table_get(desc, janet_ckeywordv("center"))),
+    .distance = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("distance"))),
+    .latitude = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("latitude"))),
+    .longitude = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("longitude"))),
+    .nearz = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("nearz"))),
+    .farz = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("farz"))),
+  };
+  vd__cam_init(cam, &cd);
+  // return janet_wrap_abstract(cam);
   return janet_wrap_abstract(cam);
 }
 
@@ -3082,8 +3145,9 @@ typedef struct
 
 static vd__asset_load_data vd__v3d_skeleton_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
 {
-  const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
-  return (vd__asset_load_data){{0}};
+  // const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
+  printf("preparing skeleton: %s with size: %lld!!!\n", params->path, mem->size);
+  return (vd__asset_load_data){.obj = {.id = 2}};
 }
 
 static bool vd__v3d_skeleton_on_load(vd__asset_load_data *data, const vd__asset_load_params *params,
@@ -3107,40 +3171,56 @@ static void vd__v3d_skeleton_on_release(vd__asset_obj obj, const sx_alloc *alloc
 
 static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
 {
-  const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
+  printf("preparing doll\n");
+  // const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
+  const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.core.heap_alloc;
 
-  printf("doll content: %s\n", mem->data);
-  
-  // cj5_token tokens[1024];
-  // const int max_tokens = sizeof(tokens) / sizeof(cj5_token);
-  // cj5_result jres = cj5_parse((const char *)mem->data, mem->size, tokens, max_tokens);
-  // if (jres.error)
-  // {
-  //   if (jres.error == CJ5_ERROR_OVERFLOW)
-  //   {
-  //     cj5_token *ntokens = (cj5_token *)sx_malloc(alloc, sizeof(cj5_token) * jres.num_tokens);
-  //     if (!ntokens)
-  //     {
-  //       sx_out_of_memory();
-  //       return (vd__asset_load_data){{0}};
-  //     }
-  //     jres = cj5_parse((const char *)mem->data, mem->size - 1, ntokens, jres.num_tokens);
-  //     if (jres.error)
-  //     {
-  //       vd__log_error("loading shader reflection failed: invalid json");
-  //       return (vd__asset_load_data){{0}};
-  //     }
-  //   }
+  cj5_token tokens[256];
+  const int max_tokens = sizeof(tokens) / sizeof(cj5_token);
+  cj5_result jres = cj5_parse((const char *)mem->data, mem->size - 1, tokens, max_tokens);
+  if (jres.error)
+  {
+    if (jres.error == CJ5_ERROR_OVERFLOW)
+    {
+      cj5_token *ntokens = (cj5_token *)sx_malloc(alloc, sizeof(cj5_token) * jres.num_tokens);
+      if (!ntokens)
+      {
+        printf("failed parsing doll file: oom\n");
+        sx_out_of_memory();
+        return (vd__asset_load_data){{0}};
+      }
+      jres = cj5_parse((const char *)mem->data, mem->size - 1, ntokens, jres.num_tokens);
+      if (jres.error)
+      {
+        // vd__log_error("loading shader reflection failed: invalid json");
+        printf("failed parsing doll file: invalid json\n");
+        return (vd__asset_load_data){{0}};
+      }
+    }
 
-  //   vd__log_error("loading shader reflection failed: invalid json, line: %d", jres.error_line);
-  // }
+    // vd__log_error("loading shader reflection failed: invalid json, line: %d", jres.error_line);
+    printf("failed parsing doll file: unknown\n");
+  }
 
-  return (vd__asset_load_data){{0}};
+  char skeleton_filepath[VD__MAX_PATH];
+
+  char dirname[VD__MAX_PATH];
+  char tmpstr[VD__MAX_PATH];
+  sx_os_path_dirname(dirname, sizeof(dirname), params->path);
+  sx_os_path_join(skeleton_filepath, sizeof(skeleton_filepath), dirname,
+                  cj5_seekget_string(&jres, 0, "skeleton", tmpstr, sizeof(tmpstr), ""));
+  sx_os_path_unixpath(skeleton_filepath, sizeof(skeleton_filepath), skeleton_filepath);
+
+  printf("attempting to load skeleton: %s\n", skeleton_filepath);
+  vd__asset_load("skeleton", skeleton_filepath, &(vd__skeleton_load_params){}, 0, NULL, 0);
+  printf("skeleton load attempted: %s\n", skeleton_filepath);
+  return (vd__asset_load_data){.obj = {.id = 1}};
 }
 
 static bool vd__v3d_doll_on_load(vd__asset_load_data *data, const vd__asset_load_params *params,
                                  const sx_mem_block *mem)
 {
+  printf("inside doll on load!\n");
   return true;
 }
 
@@ -3159,7 +3239,7 @@ static void vd__v3d_doll_on_release(vd__asset_obj obj, const sx_alloc *alloc)
 
 static void vd__v3d_init()
 {
-  vd__state.v3d.alloc = vd__mem_create_allocator("v3d", VD__MEMOPTION_INHERIT, NULL, vd__core_heap_alloc());
+  // vd__state.v3d.alloc = vd__mem_create_allocator("v3d", VD__MEMOPTION_INHERIT, NULL, vd__core_heap_alloc());
 
   vd__asset_register_asset_type("skeleton",
                                 (vd__asset_callbacks){
@@ -3252,7 +3332,7 @@ void vd__app_shutdown(void)
 {
   vd__gfx_shutdown();
   vd__script_shutdown();
-  // vd__asset_shutdown();
+  vd__asset_shutdown();
   vd__vfs_shutdown();
   vd__core_shutdown();
   if (sargs_isvalid())

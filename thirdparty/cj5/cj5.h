@@ -291,6 +291,10 @@ static inline char* cj5__strcpy(char* CJ5__RESTRICT dst, int dst_sz, const char*
 // https://github.com/lattera/glibc/blob/master/string/strlen.c
 CJ5_SKIP_ASAN static int cj5__strlen(const char* str)
 {
+#    ifdef __EMSCRIPTEN__
+    return (int)strlen(str);
+#    endif
+
     const char* char_ptr;
     const uintptr_t* longword_ptr;
     uintptr_t longword, himagic, lomagic;
