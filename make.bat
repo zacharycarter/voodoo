@@ -48,7 +48,7 @@ fi
 
 # python3 -m http.server --bind 127.0.0.1 8888 1>/dev/null 2>/dev/null &
 # server.py 8888 1>/dev/null 2>/dev/null &
-emcc $@ -g -gsource-map -I./src/voodoo -I./thirdparty/c89atomic -I./thirdparty/janet -I./thirdparty/sokol -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I./thirdparty/cj5 -I./thirdparty/sort -I./thirdparty/hmm -I./thirdparty/dds-ktx -I./thirdparty/stb -o index.html -s USE_WEBGPU=1 -s PRECISE_F32=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -s ENVIRONMENT=worker,web --shell-file web/voodoo.html -Wfatal-errors --preload-file ./data -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 -s ASSERTIONS=1 && "${SRV_CMD[@]}" http://localhost:9999
+emcc $@ -g -gsource-map -I./src/voodoo -I./thirdparty/c89atomic -I./thirdparty/janet -I./thirdparty/sokol -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I./thirdparty/cj5 -I./thirdparty/sort -I./thirdparty/hmm -I./thirdparty/dds-ktx -I./thirdparty/stb -o index.html -s USE_WEBGPU=1 -s PRECISE_F32=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -s ENVIRONMENT=worker,web --shell-file web/voodoo.html -Wfatal-errors --preload-file ./data -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 -s ASSERTIONS=2 -s SAFE_HEAP=2 && "${SRV_CMD[@]}" http://localhost:9999
 
 exit
 
@@ -110,16 +110,18 @@ call cd .\thirdparty\ozz-animation^
 	& cmake --build ./ --target BUILD_FUSE_ALL^
 	& cd ..\..\..
 
-call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -I.\thirdparty\ozz-animation\include .\thirdparty\ozz-animation\.build\src_fused\ozz_base.cc  -o.\thirdparty\ozz-animation\.build\src_fused\ozz_base.bc
-call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -I.\thirdparty\ozz-animation\include .\thirdparty\ozz-animation\.build\src_fused\ozz_animation.cc -o.\thirdparty\ozz-animation\.build\src_fused\ozz_animation.bc
-call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -I.\thirdparty\ozz-animation\include -I.\thirdparty\ozz-animation\samples\framework .\thirdparty\ozz-animation\samples\framework\mesh.cc -o.\thirdparty\ozz-animation\.build\src_fused\mesh.bc
-call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -I.\thirdparty\sokol -I.\thirdparty\ozz-animation\include -I.\thirdparty\ozz-animation\samples -I.\thirdparty\ozz-util .\thirdparty\ozz-util\ozz_util.cc -o.\thirdparty\ozz-util\ozz_util.bc
+call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -g -O0 -I.\thirdparty\ozz-animation\include .\thirdparty\ozz-animation\.build\src_fused\ozz_base.cc  -o.\thirdparty\ozz-animation\.build\src_fused\ozz_base.bc
+call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -g -O0 -I.\thirdparty\ozz-animation\include .\thirdparty\ozz-animation\.build\src_fused\ozz_animation.cc -o.\thirdparty\ozz-animation\.build\src_fused\ozz_animation.bc
+call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -g -O0 -I.\thirdparty\ozz-animation\include -I.\thirdparty\ozz-animation\samples\framework .\thirdparty\ozz-animation\samples\framework\mesh.cc -o.\thirdparty\ozz-animation\.build\src_fused\mesh.bc
+call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -g -O0 -I.\thirdparty\sokol -I.\thirdparty\ozz-animation\include -I.\thirdparty\ozz-animation\samples -I.\thirdparty\ozz-util .\thirdparty\ozz-util\ozz_util.cc -o.\thirdparty\ozz-util\ozz_util.bc
 call emar.bat rcu %~dp0\thirdparty\ozz-animation\ozz.a^
   %~dp0thirdparty\ozz-animation\.build\src_fused\ozz_base.bc^
   %~dp0thirdparty\ozz-animation\.build\src_fused\ozz_animation.bc^
   %~dp0thirdparty\ozz-animation\.build\src_fused\mesh.bc^
   %~dp0thirdparty\ozz-util\ozz_util.bc
 
-call emcc %* -g -O0  -msimd128 -mavx -s NO_EXIT_RUNTIME=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=4 -DUSE_DBG_UI -I.\assets\shaders\wgsl -I.\thirdparty -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I.\thirdparty\cj5 -I.\thirdparty\hmm -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\ozz-util -o .\web\voodoo.js -s USE_WEBGPU=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -s ASYNCIFY=1 -Wfatal-errors --preload-file .\assets\scripts\game.janet --preload-file .\assets\dolls\ozz_skin.doll --preload-file .\assets\dolls\ozz_skin_skeleton.ozz -s ALLOW_MEMORY_GROWTH=1 -s ASSERTIONS=2 -s MODULARIZE=1 -s EXPORT_ES6 -s EXPORT_NAME="'Voodoo'" -s EXPORTED_RUNTIME_METHODS=["FS"] -lidbfs.js .\thirdparty\ozz-animation\ozz.a
+@REM call emcc %* -g -O2 -fsanitize=address -fsanitize-recover=address -msimd128 -mavx -s ASSERTIONS=2 -s NO_EXIT_RUNTIME=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=6 -s STACK_SIZE=256MB -s INITIAL_MEMORY=512MB -DUSE_DBG_UI -I.\assets\shaders\wgsl -I.\thirdparty -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I.\thirdparty\cj5 -I.\thirdparty\hmm -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\ozz-util -o .\web\voodoo.js -s USE_WEBGPU=1 -s ASYNCIFY=1 -Wfatal-errors --preload-file .\assets\scripts\game.janet --preload-file .\assets\dolls\ozz_skin.doll --preload-file .\assets\dolls\ozz_skin_skeleton.ozz -s ALLOW_MEMORY_GROWTH=1 -s MODULARIZE=1 -s EXPORT_ES6 -s EXPORT_NAME="'Voodoo'" -s EXPORTED_RUNTIME_METHODS=["FS"] -lidbfs.js .\thirdparty\ozz-animation\ozz.a
+call emcc %* -g -O2 -fsanitize=address -fsanitize-recover=address -msimd128 -mavx -s ASSERTIONS=2 -s NO_EXIT_RUNTIME=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=6 -s STACK_SIZE=512MB -s INITIAL_MEMORY=1024MB -DUSE_DBG_UI -I.\assets\shaders\wgsl -I.\thirdparty -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I.\thirdparty\cj5 -I.\thirdparty\hmm -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\ozz-util -o .\web\voodoo.js -s USE_WEBGPU=1 -s ASYNCIFY=1 -Wfatal-errors --preload-file .\assets\scripts\game.janet --preload-file .\assets\dolls\ozz_skin.doll --preload-file .\assets\dolls\ozz_skin_skeleton.ozz --preload-file .\assets\dolls\ozz_skin_animation.ozz --preload-file .\assets\dolls\ozz_skin_mesh.ozz -s ALLOW_MEMORY_GROWTH=1 -s MODULARIZE=1 -s EXPORT_ES6 -s EXPORT_NAME="'Voodoo'" -s EXPORTED_RUNTIME_METHODS=["FS"] -lidbfs.js .\thirdparty\ozz-animation\ozz.a
+
 
 call rollup -c .\web\rollup.config.mjs

@@ -77,6 +77,10 @@ static const JanetReg vd__cfuns[] = {
 #pragma warning(push)
 #endif
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+
 #include "sx/allocator.h"
 #include "sx/array.h"
 #include "sx/atomic.h"
@@ -462,7 +466,7 @@ typedef enum
 
 typedef struct vd__mem_item
 {
-  vd__mem_trace_context *owner;
+  vd__mem_trace_context *owner; 
   uint16_t num_callstack_items; // = 0, then try to read 'source_file' and 'source_func'
   vd__mem_action action;
   size_t size;
@@ -526,6 +530,11 @@ typedef struct
   sx_mutex mtx;
   vd__mem_item **SX_ARRAY items;
 } vd__mem_capture_context;
+
+typedef struct
+{
+  ozz_instance_t *ozz;
+} vd__v3d_doll;
 
 enum
 {
@@ -1014,7 +1023,7 @@ static void vd__mem_create_trace_item(vd__mem_trace_context *ctx, void *ptr, voi
   if (save_current_call)
   {
     vd__mem_trace_context_mutex_enter(ctx->options, ctx->mtx);
-    vd__mem_item *new_item = (vd__mem_item *)sx_pool_new_and_grow(ctx->item_pool, vd__state.mem.alloc);
+    vd__mem_item *new_item = sx_align_ptr(sx_pool_new_and_grow(ctx->item_pool, vd__state.mem.alloc), 0, 8);
     if (!new_item)
     {
       vd__mem_trace_context_mutex_enter(ctx->options, ctx->mtx);
@@ -1064,8 +1073,8 @@ static void *vd__mem_alloc_cb(void *ptr, size_t size, uint32_t align, const char
 {
   vd__mem_trace_context *ctx = user_data;
   void *p = ctx->redirect_alloc.alloc_cb(ptr, size, align, file, func, line, user_data);
-  if (!ctx->disabled)
-    vd__mem_create_trace_item(ctx, p, ptr, size, file, func, line);
+  // if (!ctx->disabled)
+  //  vd__mem_create_trace_item(ctx, p, ptr, size, file, func, line);
   return p;
 }
 
@@ -1166,43 +1175,43 @@ bool vd__mem_init(uint32_t opts)
 
   vd__state.mem.alloc = vd__core_heap_alloc();
 
-#if SX_PLATFORM_WINDOWS
-  vd__state.mem.sw = sw_create_context_capture(SW_OPTIONS_SYMBOL | SW_OPTIONS_SOURCEPOS | SW_OPTIONS_MODULEINFO |
-                                                 SW_OPTIONS_SYMBUILDPATH,
-                                               (sw_callbacks){.load_module = mem_callstack_load_module}, NULL);
-  if (!vd__state.mem.sw)
-  {
-    return false;
-  }
+  // #if SX_PLATFORM_WINDOWS
+  //   vd__state.mem.sw = sw_create_context_capture(SW_OPTIONS_SYMBOL | SW_OPTIONS_SOURCEPOS | SW_OPTIONS_MODULEINFO |
+  //                                                  SW_OPTIONS_SYMBUILDPATH,
+  //                                                (sw_callbacks){.load_module = mem_callstack_load_module}, NULL);
+  //   if (!vd__state.mem.sw)
+  //   {
+  //     return false;
+  //   }
 
-  char vspath[SW_MAX_NAME_LEN] = {0};
+  //   char vspath[SW_MAX_NAME_LEN] = {0};
 
-  size_t num_hardcoded_paths = sizeof(k_hardcoded_vspaths) / sizeof(char *);
-  for (size_t i = 0; i < num_hardcoded_paths; i++)
-  {
-    if (sx_os_path_isdir(k_hardcoded_vspaths[i]))
-    {
-      sx_strcpy(vspath, sizeof(vspath), k_hardcoded_vspaths[i]);
-      break;
-    }
-  }
+  //   size_t num_hardcoded_paths = sizeof(k_hardcoded_vspaths) / sizeof(char *);
+  //   for (size_t i = 0; i < num_hardcoded_paths; i++)
+  //   {
+  //     if (sx_os_path_isdir(k_hardcoded_vspaths[i]))
+  //     {
+  //       sx_strcpy(vspath, sizeof(vspath), k_hardcoded_vspaths[i]);
+  //       break;
+  //     }
+  //   }
 
-  // This is a long process, it uses all kinds of shenagians to find visual studio (damn you msvc!)
-  // check previous hardcoded paths that we use to find dbghelp.dll, it is better to add to those instead
-  if (vspath[0] == 0 && vd__win_get_vstudio_dir(vspath, sizeof(vspath)))
-  {
-#if SX_ARCH_64BIT
-    sx_strcat(vspath, sizeof(vspath), "Common7\\IDE\\Extensions\\TestPlatform\\Extensions\\Cpp\\x64");
-#elif SX_ARCH_32BIT
-    sx_strcat(vspath, sizeof(vspath), "Common7\\IDE\\Extensions\\TestPlatform\\Extensions\\Cpp");
-#endif
-  }
+  //   // This is a long process, it uses all kinds of shenagians to find visual studio (damn you msvc!)
+  //   // check previous hardcoded paths that we use to find dbghelp.dll, it is better to add to those instead
+  //   if (vspath[0] == 0 && vd__win_get_vstudio_dir(vspath, sizeof(vspath)))
+  //   {
+  // #if SX_ARCH_64BIT
+  //     sx_strcat(vspath, sizeof(vspath), "Common7\\IDE\\Extensions\\TestPlatform\\Extensions\\Cpp\\x64");
+  // #elif SX_ARCH_32BIT
+  //     sx_strcat(vspath, sizeof(vspath), "Common7\\IDE\\Extensions\\TestPlatform\\Extensions\\Cpp");
+  // #endif
+  //   }
 
-  if (vspath[0])
-    sw_set_dbghelp_hintpath(vspath);
+  //   if (vspath[0])
+  //     sw_set_dbghelp_hintpath(vspath);
 
-  sw_set_callstack_limits(vd__state.mem.sw, 3, SW_MAX_FRAMES);
-#endif // SX_PLATFORM_WINDOWS
+  //   sw_set_callstack_limits(vd__state.mem.sw, 3, SW_MAX_FRAMES);
+  // #endif // SX_PLATFORM_WINDOWS
 
   // dummy root trace context
   vd__state.mem.root = vd__mem_create_trace_context("<memory>", opts, NULL);
@@ -1221,9 +1230,9 @@ bool vd__mem_init(uint32_t opts)
 
 static void vd__mem_shutdown(void)
 {
-#if SX_PLATFORM_WINDOWS
-  sw_destroy_context(g_mem.sw);
-#endif
+  // #if SX_PLATFORM_WINDOWS
+  //   sw_destroy_context(g_mem.sw);
+  // #endif
 
   if (vd__state.mem.root)
   {
@@ -1620,16 +1629,16 @@ static void vd__core_init(const vd__config *conf)
   vd__state.core.jobs = sx_job_create_context(
     vd__state.core.alloc, &(sx_job_context_desc){.num_threads = num_worker_threads,
                                                  .max_fibers = 64,
-                                                 .fiber_stack_sz = 1024 * 1024,
+                                                 .fiber_stack_sz = 5120 * 1024,
                                                  .thread_init_cb = vd__core_job_thread_init_cb,
                                                  .thread_shutdown_cb = vd__core_job_thread_shutdown_cb});
-  if (!vd__state.core.jobs)
-  {
+  // if (!vd__state.core.jobs)
+  // {
     // vd__profile_startup_end();
     // vd__log_error("initializing job dispatcher failed");
     // return false;
-    return;
-  }
+  //   return;
+  // }
   // vd__log_info("(init) jobs: threads=%d, max_fibers=%d, stack_size=%dkb",
   //  sx_job_num_worker_threads(vd__state.core.jobs), conf->job_max_fibers,
   //  conf->job_stack_size);
@@ -1640,6 +1649,11 @@ static void vd__core_shutdown(void)
   if (!vd__state.core.heap_alloc)
     return;
   const sx_alloc *alloc = vd__state.core.alloc;
+
+  if (vd__state.core.jobs) {
+        sx_job_destroy_context(vd__state.core.jobs, alloc);
+        vd__state.core.jobs = NULL;
+    }
 
   sx_mutex_lock(vd__state.core.tmp_allocs_mtx)
   {
@@ -1870,7 +1884,7 @@ static int vd__vfs_worker(void *user)
 
 static void vd__vfs_init()
 {
-  vd__state.vfs.alloc = vd__mem_create_allocator("vfs", VD__MEMOPTION_INHERIT, "core", vd__state.core.heap_alloc);
+  vd__state.vfs.alloc = vd__mem_create_allocator("vfs", VD__MEMOPTION_INHERIT, "core", vd__core_heap_alloc());
 
   vd__state.vfs.req_queue = sx_queue_spsc_create(vd__state.vfs.alloc, sizeof(vd__vfs_async_request), 128);
   vd__state.vfs.res_queue = sx_queue_spsc_create(vd__state.vfs.alloc, sizeof(vd__vfs_async_response), 128);
@@ -2260,10 +2274,11 @@ static vd__asset_handle vd__asset_load_hashed(uint32_t name_hash, const char *pa
   if (!path[0])
   {
     // vd__log_warn("empty path for asset");
+    printf("empty path for asset\n");
     return (vd__asset_handle){0};
   }
 
-  sx_assertf(vd__core_job_thread_index() == 0, "must call this function in the main thread");
+  // sx_assertf(vd__core_job_thread_index() == 0, "must call this function in the main thread");
 
   if (flags & VD__ASSET_LOAD_FLAG_RELOAD)
     flags |= VD__ASSET_LOAD_FLAG_WAIT_ON_LOAD;
@@ -2686,7 +2701,7 @@ static void vd__script_init(void)
 
   if (status == JANET_SIGNAL_ERROR)
   {
-    fprintf(stderr, "missing run argument");
+    fprintf(stderr, "missing run argument\n");
     sargs_shutdown();
     exit(1);
   }
@@ -3126,39 +3141,39 @@ static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv)
 //
 // >>v3d
 
-typedef struct
-{
-} vd__animation_load_params;
+typedef struct vd__animation_load_params vd__animation_load_params;
 
 typedef struct
 {
 } vd__skeleton_load_params;
 
-typedef struct
-{
-} vd__mesh_load_params;
+typedef struct vd__mesh_load_params vd__mesh_load_params;
 
 typedef struct
 {
 
-} vd__doll_load_params;
+} vd__v3d_doll_load_params;
 
 static vd__asset_load_data vd__v3d_skeleton_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
 {
-  // const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
-  printf("preparing skeleton: %s with size: %lld!!!\n", params->path, mem->size);
-  return (vd__asset_load_data){.obj = {.id = 2}};
+  vd__skeleton_load_params *lparams = (vd__skeleton_load_params *)params->params;
+  // ozz_instance_t *ozz = (ozz_instance_t *)lparams->ozz;
+  // ozz_load_skeleton(ozz, mem->data, mem->size);
+  printf("done preparing skeleton\n");
+  return (vd__asset_load_data){.obj.id = 1};
 }
 
 static bool vd__v3d_skeleton_on_load(vd__asset_load_data *data, const vd__asset_load_params *params,
                                      const sx_mem_block *mem)
 {
+  printf("inside skeleton on load!!!\n");
   return true;
 }
 
 static void vd__v3d_skeleton_on_finalize(vd__asset_load_data *data, const vd__asset_load_params *params,
                                          const sx_mem_block *mem)
 {
+  printf("inside skeleton on finalize!\n");
 }
 
 static void vd__v3d_skeleton_on_reload(vd__asset_handle handle, vd__asset_obj prev_obj, const sx_alloc *alloc)
@@ -3171,9 +3186,7 @@ static void vd__v3d_skeleton_on_release(vd__asset_obj obj, const sx_alloc *alloc
 
 static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
 {
-  printf("preparing doll\n");
-  // const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
-  const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.core.heap_alloc;
+  const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.v3d.alloc;
 
   cj5_token tokens[256];
   const int max_tokens = sizeof(tokens) / sizeof(cj5_token);
@@ -3203,6 +3216,8 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
   }
 
   char skeleton_filepath[VD__MAX_PATH];
+  char animation_filepath[VD__MAX_PATH];
+  char mesh_filepath[VD__MAX_PATH];
 
   char dirname[VD__MAX_PATH];
   char tmpstr[VD__MAX_PATH];
@@ -3210,11 +3225,27 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
   sx_os_path_join(skeleton_filepath, sizeof(skeleton_filepath), dirname,
                   cj5_seekget_string(&jres, 0, "skeleton", tmpstr, sizeof(tmpstr), ""));
   sx_os_path_unixpath(skeleton_filepath, sizeof(skeleton_filepath), skeleton_filepath);
+  sx_os_path_join(animation_filepath, sizeof(animation_filepath), dirname,
+                  cj5_seekget_string(&jres, 0, "animation", tmpstr, sizeof(tmpstr), ""));
+  sx_os_path_unixpath(animation_filepath, sizeof(animation_filepath), animation_filepath);
+  sx_os_path_join(mesh_filepath, sizeof(mesh_filepath), dirname,
+                  cj5_seekget_string(&jres, 0, "mesh", tmpstr, sizeof(tmpstr), ""));
+  sx_os_path_unixpath(mesh_filepath, sizeof(mesh_filepath), mesh_filepath);
 
-  printf("attempting to load skeleton: %s\n", skeleton_filepath);
-  vd__asset_load("skeleton", skeleton_filepath, &(vd__skeleton_load_params){}, 0, NULL, 0);
-  printf("skeleton load attempted: %s\n", skeleton_filepath);
-  return (vd__asset_load_data){.obj = {.id = 1}};
+  vd__v3d_doll *doll = sx_malloc(alloc, sizeof(vd__v3d_doll));
+  doll->ozz = ozz_create_instance(0);
+
+  sx_mem_block *skeleton_mem = sx_file_load_bin(alloc, skeleton_filepath);
+  ozz_load_skeleton(doll->ozz, skeleton_mem->data, skeleton_mem->size);
+
+  sx_mem_block *animation_mem = sx_file_load_bin(alloc, animation_filepath);
+  ozz_load_animation(doll->ozz, animation_mem->data, animation_mem->size);
+
+  sx_mem_block *mesh_mem = sx_file_load_bin(alloc, mesh_filepath);
+  ozz_load_skeleton(doll->ozz, mesh_mem->data, mesh_mem->size);
+
+  printf("done preparing doll!\n");
+  return (vd__asset_load_data){.obj.ptr = doll};
 }
 
 static bool vd__v3d_doll_on_load(vd__asset_load_data *data, const vd__asset_load_params *params,
@@ -3227,6 +3258,7 @@ static bool vd__v3d_doll_on_load(vd__asset_load_data *data, const vd__asset_load
 static void vd__v3d_doll_on_finalize(vd__asset_load_data *data, const vd__asset_load_params *params,
                                      const sx_mem_block *mem)
 {
+  printf("inside doll on finalize!\n");
 }
 
 static void vd__v3d_doll_on_reload(vd__asset_handle handle, vd__asset_obj prev_obj, const sx_alloc *alloc)
@@ -3235,11 +3267,13 @@ static void vd__v3d_doll_on_reload(vd__asset_handle handle, vd__asset_obj prev_o
 
 static void vd__v3d_doll_on_release(vd__asset_obj obj, const sx_alloc *alloc)
 {
+  printf("releasing doll!\n");
+  sx_free(alloc, obj.ptr);
 }
 
 static void vd__v3d_init()
 {
-  // vd__state.v3d.alloc = vd__mem_create_allocator("v3d", VD__MEMOPTION_INHERIT, NULL, vd__core_heap_alloc());
+  vd__state.v3d.alloc = vd__mem_create_allocator("v3d", VD__MEMOPTION_INHERIT, NULL, vd__core_heap_alloc());
 
   vd__asset_register_asset_type("skeleton",
                                 (vd__asset_callbacks){
@@ -3249,8 +3283,8 @@ static void vd__v3d_init()
                                   .on_release = vd__v3d_skeleton_on_release,
                                   .on_reload = vd__v3d_skeleton_on_reload,
                                 },
-                                "vd__skeleton_load_params", sizeof(vd__skeleton_load_params), (vd__asset_obj){},
-                                (vd__asset_obj){}, 0);
+                                "vd__skeleton_load_params", sizeof(vd__skeleton_load_params), (vd__asset_obj){0},
+                                (vd__asset_obj){0}, 0);
   vd__asset_register_asset_type("doll",
                                 (vd__asset_callbacks){
                                   .on_prepare = vd__v3d_doll_on_prepare,
@@ -3259,8 +3293,8 @@ static void vd__v3d_init()
                                   .on_release = vd__v3d_doll_on_release,
                                   .on_reload = vd__v3d_doll_on_reload,
                                 },
-                                "vd__doll_load_params", sizeof(vd__doll_load_params), (vd__asset_obj){},
-                                (vd__asset_obj){}, VD__ASSET_LOAD_FLAG_TEXT_FILE);
+                                "vd__doll_load_params", sizeof(vd__v3d_doll_load_params), (vd__asset_obj){0},
+                                (vd__asset_obj){0}, VD__ASSET_LOAD_FLAG_TEXT_FILE);
 }
 
 //    ___   ___  ___
@@ -3306,7 +3340,7 @@ JanetSignal vd__app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const
 
 void vd__app_init()
 {
-  vd__core_init(&(vd__config){});
+  vd__core_init(&(vd__config){0});
   vd__asset_init();
   vd__script_init();
   vd__gfx_init();
@@ -3325,7 +3359,7 @@ void vd__app_init()
     sapp_quit();
   }
 
-  vd__asset_load("doll", "/assets/dolls/ozz_skin.doll", &(vd__doll_load_params){}, 0, NULL, 0);
+  vd__asset_load("doll", "/assets/dolls/ozz_skin.doll", &(vd__v3d_doll_load_params){}, 0, NULL, 0);
 }
 
 void vd__app_shutdown(void)
@@ -3357,34 +3391,27 @@ void vd__app_event(const sapp_event *ev)
 
 void vd__app_update(void)
 {
-  MAIN_THREAD_EM_ASM({
-    if (Module.get_signal(Module.signals.scriptDirty))
-    {
-      const result = Module._vd__script_evaluate(stringToNewUTF8(Module.editor.state.doc.toString()));
-      Module.set_signal(Module.signals.scriptDirty, false);
-      if (!result)
-      {
-        // Signal.set(evaluationState, EvaluationState.EvaluationError);
-        console.error("failed evaluation");
-      }
-      else
-      {
-        // try {
-        //   renderer.recompileShader(result.shaderSource);
-        //   Signal.set(evaluationState, EvaluationState.Success);
-        //   Signal.set(isAnimation, result.isAnimated);
-        // } catch (e: any) {
-        //   Signal.set(evaluationState, EvaluationState.ShaderCompilationError);
-        //   outputChannel.print(e.toString(), true);
-        //   if (e.cause != null) {
-        //     outputChannel.print(e.cause, true);
-        //   }
-        // }
-        console.log("successfully evaluated script!");
-      }
-      // outputChannel.target = null;
-    }
-  });
+  // MAIN_THREAD_EM_ASM({
+  //   const isDirty = Module.get_signal(Module.signals.scriptDirty);
+  //   if (isDirty)
+  //   {
+  //     const updatedScript = Module.editor.state.doc.toString();
+  //     const updatedScriptByteArray = stringToNewUTF8(updatedScript);
+  //     const result = Module._vd__script_evaluate(updatedScriptByteArray);
+  //     Module.set_signal(Module.signals.scriptDirty, false);
+
+  //     if (!result)
+  //     {
+  //       // Signal.set(evaluationState, EvaluationState.EvaluationError);
+  //       console.error("failed evaluation");
+  //     }
+  //     else
+  //     {
+  //       console.log("successfully evaluated script!");
+  //     }
+  //     // outputChannel.target = null;
+  //   }
+  // });
 
   Janet ret;
   JanetSignal status =

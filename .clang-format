@@ -232,4 +232,6 @@ WhitespaceSensitiveMacros:
   - NS_SWIFT_NAME
   - PP_STRINGIZE
   - STRINGIZE
+  - EM_ASM
+  - MAIN_THREAD_EM_ASM
 ---
