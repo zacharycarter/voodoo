@@ -65,6 +65,12 @@ voodoo is very much WIP.
 - [ ] Audio
 - [ ] Physics
 - [ ] Networking
+- [x] Web (WASM) support
+- [ ] Windows support
+- [ ] Linux support
+- [ ] MacOS support
+- [ ] Android support
+- [ ] iOS support
 
 ## License
 voodoo is licensed under the MIT License.
