@@ -1,5 +1,5 @@
 (def state @{:camera nil
-             :player @{:model nil}})
+             :player @{:doll nil}})
 
 (defn init []
   (set (state :camera) (cam/new @{:min-dist 1.0
@@ -10,6 +10,8 @@
                                   :longitude 45.0
                                   :nearz 0.01
                                   :farz 2000.0})))
+
+  (set (state :doll) (v3d/doll "ozz_skin"))
 
 (defn event [e]
   (cam/handle-event (state :camera) e))

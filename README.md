@@ -13,12 +13,9 @@ voodoo is very much WIP.
 [assets/scripts/game.janet](https://github.com/zacharycarter/voodoo/assets/1181513/b061174c-ac01-4f5e-84a0-370eb4942dc0)
 
 
-## [Example](https://github.com/zacharycarter/voodoo/blob/master/assets/scripts/game.janet)
+## [Example Usage](https://github.com/zacharycarter/voodoo/blob/master/assets/scripts/game.janet)
 
-![assets/scripts/game.janet](https://github.com/zacharycarter/voodoo/blob/master/screenshots/ss0.png?raw=true)
-
-
-```
+```janet
 (def state @{:camera nil})
 
 (defn init []
@@ -48,6 +45,26 @@ voodoo is very much WIP.
     :update update
     :shutdown shutdown})
 ```
+
+## Roadmap
+- [x] Memory management & Allocators
+- [ ] Asset pipeline
+- [ ] Build system :construction:
+- [x] Virtual file system
+- [x] Asset management system
+- [x] Fiber-based job system
+- [x] Basic orbit camera
+- [x] Debug drawing
+- [x] Scripting
+- [ ] Visual scripting
+- [ ] Forward renderer :construction:
+- [ ] ImGui
+- [ ] Entity component system :construction:
+- [ ] Skeletal animation :construction:
+- [ ] Animation controller
+- [ ] Audio
+- [ ] Physics
+- [ ] Networking
 
 ## License
 voodoo is licensed under the MIT License.

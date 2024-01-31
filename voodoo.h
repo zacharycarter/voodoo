@@ -59,6 +59,7 @@ static const JanetReg vd__cfuns[] = {
    "(voodoo/dbg/draw/camera)\n\nSet camera matricies for debug draw operations."},
   {"dbg/draw/cube", cfun_vd_dbg_draw_cube, "(voodoo/dbg/draw/cube)\n\nDraw a debug cube."},
   {"dbg/draw/grid", cfun_vd_dbg_draw_grid, "(voodoo/dbg/draw/grid)\n\nDraw a debug grid."},
+  {"v3d/doll", cfun_vd_v3d_doll, "(voodoo/v3d/doll)\n\nCreate a doll asset."}
   {NULL, NULL, NULL}};
 #endif // VOODOO_INCLUDED
 
