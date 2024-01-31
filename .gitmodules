@@ -4,3 +4,6 @@
 [submodule "thirdparty/sx"]
 	path = thirdparty/sx
 	url = git@github.com:zacharycarter/sx.git
+[submodule "thirdparty/flecs"]
+	path = thirdparty/flecs
+	url = git@github.com:zacharycarter/flecs.git

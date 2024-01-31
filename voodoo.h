@@ -102,6 +102,14 @@ static const JanetReg vd__cfuns[] = {
 #define CJ5_IMPLEMENT
 #include "cj5.h"
 
+#define FLECS_CUSTOM_BUILD
+#define FLECS_MODULE
+#define FLECS_SYSTEM
+#define FLECS_META
+#define FLECS_META_C
+
+#include "flecs.h"
+
 #define HANDMADE_MATH_IMPLEMENTATION
 #include "hmm.h"
 #include "ozz_util.h"
@@ -674,6 +682,11 @@ static struct
     sx_mutex tmp_allocs_mtx;
     vd__tmp_alloc_tls **SX_ARRAY tmp_allocs;
   } core;
+
+  struct
+  {
+    ecs_world_t *world;
+  } ecs;
 
   struct
   {
@@ -1703,6 +1716,23 @@ static void vd__core_shutdown(void)
   vd__mem_shutdown();
 
   sx_memset(&vd__state.core, 0x0, sizeof(vd__state.core));
+}
+
+//    _____________
+//   / __/ ___/ __/
+//  / _// /___\ \
+// /___/\___/___/
+//
+// >>ecs
+
+static void vd__ecs_init()
+{
+  vd__state.ecs.world = ecs_init();
+}
+
+static void vd__ecs_shutdown()
+{
+  ecs_fini(vd__state.ecs.world);
 }
 
 //   _   __________
@@ -3485,6 +3515,7 @@ JanetSignal vd__app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const
 void vd__app_init()
 {
   vd__core_init(&(vd__config){0});
+  vd__ecs_init();
   vd__asset_init();
   vd__script_init("game");
   vd__gfx_init();
@@ -3512,6 +3543,7 @@ void vd__app_shutdown(void)
   vd__script_shutdown();
   vd__asset_shutdown();
   vd__vfs_shutdown();
+  vd__ecs_shutdown();
   vd__core_shutdown();
   if (sargs_isvalid())
     sargs_shutdown();
@@ -3580,7 +3612,7 @@ sapp_desc sokol_main(int argc, char *argv[])
     mod = sargs_value("run");
   }
 
-  // vd__script_init(mod);
+  vd__script_init(mod);
 
   return (sapp_desc){
     .init_cb = vd__app_init,
