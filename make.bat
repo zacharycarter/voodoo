@@ -97,6 +97,7 @@ rem cook art
 
 @REM compile shaders
 call .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\shapes.glsl -o .\assets\shaders\wgsl\shapes.glsl.h -l wgsl -r
+call .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\shadows.glsl -o .\assets\shaders\wgsl\shadows.glsl.h -l wgsl -r
 
 
 @REM compile and launch

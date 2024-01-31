@@ -117,6 +117,7 @@ static const JanetReg vd__cfuns[] = {
 #include "sokol_shape.h"
 #include "sokol_time.h"
 
+#include "shadows.glsl.h"
 #include "shapes.glsl.h"
 
 #define vd__to_id(index) ((uint32_t)(index) + 1)
@@ -140,6 +141,10 @@ int vd__app_height();
 
 #ifndef VD__CONFIG_ASSET_POOL_SIZE
 #define VD__CONFIG_ASSET_POOL_SIZE 256
+#endif
+
+#ifndef VD__CONFIG_SHADOW_MAP_SIZE
+#define VD__CONFIG_SHADOW_MAP_SIZE 4096
 #endif
 
 //    __   ____  _______________  _______
@@ -466,7 +471,7 @@ typedef enum
 
 typedef struct vd__mem_item
 {
-  vd__mem_trace_context *owner; 
+  vd__mem_trace_context *owner;
   uint16_t num_callstack_items; // = 0, then try to read 'source_file' and 'source_func'
   vd__mem_action action;
   size_t size;
@@ -530,6 +535,24 @@ typedef struct
   sx_mutex mtx;
   vd__mem_item **SX_ARRAY items;
 } vd__mem_capture_context;
+
+typedef struct
+{
+  sg_pass_action pass_action;
+  sg_pass pass;
+  sg_pipeline pip;
+  sg_pipeline pip_2;
+  sg_image depth_target;
+  sg_image color_target;
+  sg_sampler sampler;
+  int32_t sample_count;
+} vd__v3d_offscreen_pass;
+
+typedef struct
+{
+  sg_pass_action pass_action;
+  sg_pipeline pip;
+} vd__v3d_display_pass;
 
 typedef struct
 {
@@ -685,6 +708,12 @@ static struct
       vd__dbg_shape shapes[VD__NUM_SHAPES];
 
     } dbg;
+
+    struct
+    {
+      vd__v3d_offscreen_pass shadow;
+      vd__v3d_display_pass display;
+    } fwd;
   } v3d;
 
   struct
@@ -1634,9 +1663,9 @@ static void vd__core_init(const vd__config *conf)
                                                  .thread_shutdown_cb = vd__core_job_thread_shutdown_cb});
   // if (!vd__state.core.jobs)
   // {
-    // vd__profile_startup_end();
-    // vd__log_error("initializing job dispatcher failed");
-    // return false;
+  // vd__profile_startup_end();
+  // vd__log_error("initializing job dispatcher failed");
+  // return false;
   //   return;
   // }
   // vd__log_info("(init) jobs: threads=%d, max_fibers=%d, stack_size=%dkb",
@@ -1650,10 +1679,11 @@ static void vd__core_shutdown(void)
     return;
   const sx_alloc *alloc = vd__state.core.alloc;
 
-  if (vd__state.core.jobs) {
-        sx_job_destroy_context(vd__state.core.jobs, alloc);
-        vd__state.core.jobs = NULL;
-    }
+  if (vd__state.core.jobs)
+  {
+    sx_job_destroy_context(vd__state.core.jobs, alloc);
+    vd__state.core.jobs = NULL;
+  }
 
   sx_mutex_lock(vd__state.core.tmp_allocs_mtx)
   {
@@ -2681,27 +2711,38 @@ static void vd__janet_cdefs(JanetTable *env)
 {
 }
 
-static void vd__script_init(void)
+static void vd__script_init(const char *module_name)
 {
   janet_init();
   JanetTable *core_env = janet_core_env(NULL);
   JanetTable *lookup = janet_env_lookup(core_env);
 
-  vd__janet_cdefs(core_env);
   janet_cfuns(core_env, NULL, vd__cfuns);
 
-  const char *str = sx_os_path_exists("/voodoo/game.janet") ? "(setdyn :syspath \"./voodoo\")\n"
-                                                              "(import game :prefix \"\")\n"
-                                                              "(voodoo)"
-                                                            : "(setdyn :syspath \"./assets/scripts\")\n"
-                                                              "(import game :prefix \"\")\n"
-                                                              "(voodoo)";
+  char module_path[VD__MAX_PATH];
+  if (module_name)
+  {
+    sx_snprintf(module_path, sizeof(module_path), "/voodoo/%s.janet", module_name);
+  }
+
+  char module_wrapper[512];
+  sx_os_path_exists(module_path) ? sx_snprintf(module_wrapper, sizeof(module_wrapper),
+                                               "(setdyn :syspath \"./voodoo\")\n"
+                                               "(import %s :prefix \"\")\n"
+                                               "(voodoo)",
+                                               module_name)
+                                 : sx_snprintf(module_wrapper, sizeof(module_wrapper),
+                                               "(setdyn :syspath \"./assets/scripts\")\n"
+                                               "(import game :prefix \"\")\n"
+                                               "(voodoo)");
+
   Janet ret;
-  JanetSignal status = janet_dostring(core_env, str, "main", &ret);
+  JanetSignal status = janet_dostring(core_env, module_wrapper, "main", &ret);
 
   if (status == JANET_SIGNAL_ERROR)
   {
-    fprintf(stderr, "missing run argument\n");
+    fprintf(stderr, "failed executing module\n");
+    janet_deinit();
     sargs_shutdown();
     exit(1);
   }
@@ -3271,6 +3312,106 @@ static void vd__v3d_doll_on_release(vd__asset_obj obj, const sx_alloc *alloc)
   sx_free(alloc, obj.ptr);
 }
 
+static void vd__v3d_render(void)
+{
+  // sg_begin_pass(state.shadow.pass, &state.shadow.pass_action);
+  // sg_apply_pipeline(state.shadow.pip);
+  // sg_apply_bindings(&state.shadow.bind);
+  // sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_shadow_params, &SG_RANGE(cube_vs_shadow_params));
+  // sg_draw(0, 36, 1);
+  // sg_end_pass();
+
+  sg_begin_pass(vd__state.v3d.fwd.shadow.pass, &vd__state.v3d.fwd.shadow.pass_action); 
+}
+
+static void vd__v3d_init_shadow_pass(vd__v3d_offscreen_pass *shadow, int size)
+{
+  shadow->pass_action = (sg_pass_action){.colors[0] = {
+                                         .load_action = SG_LOADACTION_CLEAR,
+                                         .clear_value = {1.0f, 1.0f, 1.0f, 1.0f},
+                                       }};
+
+  shadow->color_target = sg_make_image(&(sg_image_desc){
+    .render_target = true,
+    .width = size,
+    .height = size,
+    .pixel_format = SG_PIXELFORMAT_RGBA8,
+    .sample_count = 1,
+    .label = "shadow-map",
+  });
+
+  sg_image shadow_depth_img = sg_make_image(&(sg_image_desc){
+    .render_target = true,
+    .width = size,
+    .height = size,
+    .pixel_format = SG_PIXELFORMAT_DEPTH,
+    .sample_count = 1,
+    .label = "shadow-depth-buffer",
+  });
+
+  shadow->sampler = sg_make_sampler(&(sg_sampler_desc){
+    .min_filter = SG_FILTER_NEAREST,
+    .mag_filter = SG_FILTER_NEAREST,
+    .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
+    .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
+    .label = "shadow-sampler",
+  });
+
+  shadow->pass = sg_make_pass(&(sg_pass_desc){
+    .color_attachments[0].image = shadow->color_target,
+    .depth_stencil_attachment.image = shadow_depth_img,
+    .label = "shadow-pass",
+  });
+
+  shadow->pip = sg_make_pipeline(
+    &(sg_pipeline_desc){.layout =
+                          {
+                            // need to provide vertex stride, because normal component is skipped in shadow pass
+                            .buffers[0].stride = 6 * sizeof(float),
+                            .attrs =
+                              {
+                                [ATTR_vs_shadow_pos].format = SG_VERTEXFORMAT_FLOAT3,
+                              },
+                          },
+                        .shader = sg_make_shader(shadow_shader_desc(sg_query_backend())),
+                        .index_type = SG_INDEXTYPE_UINT16,
+                        // render back-faces in shadow pass to prevent shadow acne on front-faces
+                        .cull_mode = SG_CULLMODE_FRONT,
+                        .sample_count = 1,
+                        .colors[0].pixel_format = SG_PIXELFORMAT_RGBA8,
+                        .depth =
+                          {
+                            .pixel_format = SG_PIXELFORMAT_DEPTH,
+                            .compare = SG_COMPAREFUNC_LESS_EQUAL,
+                            .write_enabled = true,
+                          },
+                        .label = "shadow-pipeline"});
+}
+
+static void vd__v3d_init_display_pass(vd__v3d_display_pass *display)
+{
+  display->pass_action = (sg_pass_action){
+    .colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0.13f, 0.13f, 0.13f, 1.0f}},
+  };
+
+  display->pip = sg_make_pipeline(&(sg_pipeline_desc){
+    .layout = {.attrs =
+                 {
+                   [ATTR_vs_display_pos].format = SG_VERTEXFORMAT_FLOAT3,
+                   [ATTR_vs_display_norm].format = SG_VERTEXFORMAT_FLOAT3,
+                 }},
+    .shader = sg_make_shader(display_shader_desc(sg_query_backend())),
+    .index_type = SG_INDEXTYPE_UINT16,
+    .cull_mode = SG_CULLMODE_BACK,
+    .depth =
+      {
+        .compare = SG_COMPAREFUNC_LESS_EQUAL,
+        .write_enabled = true,
+      },
+    .label = "display-pipeline",
+  });
+}
+
 static void vd__v3d_init()
 {
   vd__state.v3d.alloc = vd__mem_create_allocator("v3d", VD__MEMOPTION_INHERIT, NULL, vd__core_heap_alloc());
@@ -3295,6 +3436,9 @@ static void vd__v3d_init()
                                 },
                                 "vd__doll_load_params", sizeof(vd__v3d_doll_load_params), (vd__asset_obj){0},
                                 (vd__asset_obj){0}, VD__ASSET_LOAD_FLAG_TEXT_FILE);
+
+  vd__v3d_init_shadow_pass(&vd__state.v3d.fwd.shadow, VD__CONFIG_SHADOW_MAP_SIZE);
+  vd__v3d_init_display_pass(&vd__state.v3d.fwd.display);
 }
 
 //    ___   ___  ___
@@ -3342,7 +3486,7 @@ void vd__app_init()
 {
   vd__core_init(&(vd__config){0});
   vd__asset_init();
-  vd__script_init();
+  vd__script_init("game");
   vd__gfx_init();
   vd__v3d_init();
   vd__dbg_draw_init();
@@ -3436,14 +3580,7 @@ sapp_desc sokol_main(int argc, char *argv[])
     mod = sargs_value("run");
   }
 
-  if (!mod)
-  {
-    fprintf(stderr, "missing run argument");
-    sargs_shutdown();
-    exit(1);
-  }
-
-  // vd__script_init();
+  // vd__script_init(mod);
 
   return (sapp_desc){
     .init_cb = vd__app_init,
