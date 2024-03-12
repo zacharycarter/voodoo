@@ -11,7 +11,7 @@
                                   :nearz 0.01
                                   :farz 2000.0})))
 
-  (set (state :doll) (v3d/doll "ozz_skin"))
+  # (set (state :doll) (v3d/doll "ozz_skin"))
 
 (defn event [e]
   (cam/handle-event (state :camera) e))
