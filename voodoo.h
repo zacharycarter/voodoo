@@ -1350,6 +1350,7 @@ static void vd__vfs_update();
 static void vd__asset_update();
 
 void vd__dbg_draw();
+static void vd__v3d_render();
 
 static _Thread_local vd__tmp_alloc_tls tl_tmp_alloc;
 
@@ -1611,7 +1612,8 @@ static void vd__core_update(void)
 
   vd__vfs_update();
   vd__asset_update();
-  vd__dbg_draw();
+  vd__v3d_render();
+  // vd__dbg_draw();
 }
 
 static void vd__core_job_thread_init_cb(sx_job_context *ctx, int thread_index, uint32_t thread_id, void *user)
@@ -3088,14 +3090,14 @@ void vd__dbg_draw()
 
   sgl_load_matrix(&vd__state.v3d.dbg.vp.Elements[0][0]);
 
-  sg_begin_pass(&(sg_pass){
+/*  sg_begin_pass(&(sg_pass){
     .action = {
       .colors[0] = {
         .load_action = SG_LOADACTION_CLEAR,
         .clear_value = { 0.13f, 0.13f, 0.13f, 1.0f } },
       },
       .swapchain = sglue_swapchain()
-    });
+    });*/
   sg_apply_pipeline(vd__state.v3d.dbg.pip);
 
   sg_apply_bindings(&(sg_bindings){.vertex_buffers[0] = vd__state.v3d.dbg.vtx_buf,
@@ -3106,8 +3108,8 @@ void vd__dbg_draw()
   sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(vs_params));
   sg_draw(vd__state.v3d.dbg.shapes[VD__BOX].draw.base_element, vd__state.v3d.dbg.shapes[VD__BOX].draw.num_elements, 1);
   sgl_draw();
-  sg_end_pass();
-  sg_commit();
+  // sg_end_pass();
+  // sg_commit();
 }
 
 void vd__dbg_draw_init()
@@ -3227,11 +3229,14 @@ static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv)
 //
 // >>v3d
 
-ECS_STRUCT(vd__static_mesh, {
+typedef struct
+{
   sg_buffer vbuf;
   sg_buffer ibuf;
   uint32_t num_indices;
-});
+} vd__static_mesh;
+
+ECS_COMPONENT_DECLARE(vd__static_mesh);
 
 typedef struct vd__animation_load_params vd__animation_load_params;
 
@@ -3388,11 +3393,22 @@ static void vd__v3d_cube()
   ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
   ecs_set(vd__state.ecs.world, e, vd__static_mesh,
           {sg_make_buffer(&(sg_buffer_desc){.data = SG_RANGE(cube_vertices)}),
-           sg_make_buffer(&(sg_buffer_desc){.type = SG_BUFFERTYPE_INDEXBUFFER, .data = SG_RANGE(cube_indices)})});
+           sg_make_buffer(&(sg_buffer_desc){.type = SG_BUFFERTYPE_INDEXBUFFER, .data = SG_RANGE(cube_indices)}),
+           36});
 }
 
 static void vd__v3d_render(void)
 {
+  HMM_Mat4 model = HMM_Scale(HMM_V3(25.0f, 25.0f, 25.0f));
+  vd__state.v3d.fwd.display_uniforms.mvp = HMM_MulM4(vd__state.v3d.dbg.vp, model);
+  sg_begin_pass(&(sg_pass){
+    .action = {
+      .colors[0] = {
+        .load_action = SG_LOADACTION_CLEAR,
+        .clear_value = { 0.13f, 0.13f, 0.13f, 1.0f } },
+    },
+    .swapchain = sglue_swapchain()
+  });
   sg_apply_pipeline(vd__state.v3d.fwd.display.pip);
   sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_display_vs_uniforms, &SG_RANGE(vd__state.v3d.fwd.display_uniforms));
 
@@ -3401,6 +3417,8 @@ static void vd__v3d_render(void)
   {
     vd__static_mesh *mesh = ecs_field(&it, vd__static_mesh, 1);
 
+    printf("drawing cube with %d indices!!!\n", mesh->num_indices);
+    
     sg_bindings bind = (sg_bindings) {
       .vertex_buffers[0] = mesh->vbuf,
       .index_buffer = mesh->ibuf
@@ -3409,7 +3427,9 @@ static void vd__v3d_render(void)
     sg_apply_bindings(&bind);
     sg_draw(0, mesh->num_indices, 1);
   }
+  vd__dbg_draw();
   sg_end_pass();
+  sg_commit();
   // sg_begin_pass(state.shadow.pass, &state.shadow.pass_action);
   // sg_apply_pipeline(state.shadow.pip);
   // sg_apply_bindings(&state.shadow.bind);
@@ -3486,7 +3506,7 @@ static void vd__v3d_shadow_pass_init(vd__v3d_offscreen_pass *shadow, int size)
 
 static void vd__v3d_display_pass_init(vd__v3d_display_pass *display)
 {
-  /*display->pass_action = (sg_pass_action){
+  display->pass_action = (sg_pass_action){
     .colors[0] = {.load_action = SG_LOADACTION_CLEAR, .clear_value = {0.13f, 0.13f, 0.13f, 1.0f}},
   };
 
@@ -3496,7 +3516,7 @@ static void vd__v3d_display_pass_init(vd__v3d_display_pass *display)
                    [ATTR_vd_v3d_display_vs_position].format = SG_VERTEXFORMAT_FLOAT3,
                    [ATTR_vd_v3d_display_vs_color0].format = SG_VERTEXFORMAT_FLOAT4,
                  }},
-    .shader = sg_make_shader(display_shader_desc(sg_query_backend())),
+    .shader = sg_make_shader(vd_v3d_display_shader_desc(sg_query_backend())),
     .index_type = SG_INDEXTYPE_UINT16,
     .cull_mode = SG_CULLMODE_BACK,
     .depth =
@@ -3505,7 +3525,7 @@ static void vd__v3d_display_pass_init(vd__v3d_display_pass *display)
         .write_enabled = true,
       },
     .label = "display-pipeline",
-  });*/
+  });
 }
 
 static void vd__v3d_init()
@@ -3533,10 +3553,14 @@ static void vd__v3d_init()
                                 "vd__doll_load_params", sizeof(vd__v3d_doll_load_params), (vd__asset_obj){0},
                                 (vd__asset_obj){0}, VD__ASSET_LOAD_FLAG_TEXT_FILE);
 
-  vd__state.v3d.static_mesh_query = ecs_query_new(vd__state.ecs.world, "[in] vd__static_mesh");
+
+  ECS_COMPONENT_DEFINE(vd__state.ecs.world, vd__static_mesh);
+
+  vd__state.v3d.static_mesh_query = ecs_query_new(vd__state.ecs.world, "vd__static_mesh");
 
   vd__v3d_shadow_pass_init(&vd__state.v3d.fwd.shadow, VD__CONFIG_SHADOW_MAP_SIZE);
   vd__v3d_display_pass_init(&vd__state.v3d.fwd.display);
+  vd__v3d_cube();
 }
 
 //    ___   ___  ___
