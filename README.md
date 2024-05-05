@@ -9,6 +9,11 @@ voodoo is focused on creating games for the browser.
 
 voodoo is very much WIP.
 
+## Screenshot reflecting current state of renderer
+![ss0.png](screenshots/ss0.png)
+
+
+
 ## Video demonstration
 [assets/scripts/game.janet](https://github.com/zacharycarter/voodoo/assets/1181513/b061174c-ac01-4f5e-84a0-370eb4942dc0)
 
