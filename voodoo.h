@@ -746,7 +746,11 @@ static struct
                 vd_v3d_depth_vs_uniforms_t vs;
                 vd_v3d_depth_fs_uniforms_t fs;
             } depth_uniforms;
-            vd_v3d_display_vs_uniforms_t display_uniforms;
+            struct
+            {
+                vd_v3d_display_vs_uniforms_t vs;
+                vd_v3d_display_fs_uniforms_t fs;
+            } display_uniforms;
             struct
             {
                 HMM_Vec3 ambient;
@@ -3114,6 +3118,7 @@ void vd__dbg_draw_camera(vd__camera *cam)
 {
     vd__state.v3d.dbg.vp = cam->view_proj;
     vd__state.v3d.dbg.v = cam->view;
+    vd__state.v3d.dbg.eye_pos = cam->eye_pos;
 }
 
 void vd__dbg_draw()
@@ -3407,26 +3412,34 @@ static void vd__v3d_doll_on_release(vd__asset_obj obj, const sx_alloc *alloc)
 
 static void vd__v3d_cube(HMM_Vec3 position, HMM_Vec3 scale)
 {
-    static const float cube_vertices[] = {-1.0, -1.0, -1.0, 1.0, 0.0, 0.0, 1.0, 1.0,  -1.0, -1.0, 1.0, 0.0, 0.0, 1.0,
-                                          1.0,  1.0,  -1.0, 1.0, 0.0, 0.0, 1.0, -1.0, 1.0,  -1.0, 1.0, 0.0, 0.0, 1.0,
+    static const float cube_vertices[] = {                                          // pos                  normals
+                                          -1.0f, -1.0f, -1.0f, 0.0f,  0.0f,  -1.0f, // CUBE BACK FACE
+                                          1.0f,  -1.0f, -1.0f, 0.0f,  0.0f,  -1.0f, 1.0f,  1.0f,  -1.0f,
+                                          0.0f,  0.0f,  -1.0f, -1.0f, 1.0f,  -1.0f, 0.0f,  0.0f,  -1.0f,
 
-                                          -1.0, -1.0, 1.0,  0.0, 1.0, 0.0, 1.0, 1.0,  -1.0, 1.0,  0.0, 1.0, 0.0, 1.0,
-                                          1.0,  1.0,  1.0,  0.0, 1.0, 0.0, 1.0, -1.0, 1.0,  1.0,  0.0, 1.0, 0.0, 1.0,
+                                          -1.0f, -1.0f, 1.0f,  0.0f,  0.0f,  1.0f, // CUBE FRONT FACE
+                                          1.0f,  -1.0f, 1.0f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,  1.0f,
+                                          0.0f,  0.0f,  1.0f,  -1.0f, 1.0f,  1.0f,  0.0f,  0.0f,  1.0f,
 
-                                          -1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 1.0, -1.0, 1.0,  -1.0, 0.0, 0.0, 1.0, 1.0,
-                                          -1.0, 1.0,  1.0,  0.0, 0.0, 1.0, 1.0, -1.0, -1.0, 1.0,  0.0, 0.0, 1.0, 1.0,
+                                          -1.0f, -1.0f, -1.0f, -1.0f, 0.0f,  0.0f, // CUBE LEFT FACE
+                                          -1.0f, 1.0f,  -1.0f, -1.0f, 0.0f,  0.0f,  -1.0f, 1.0f,  1.0f,
+                                          -1.0f, 0.0f,  0.0f,  -1.0f, -1.0f, 1.0f,  -1.0f, 0.0f,  0.0f,
 
-                                          1.0,  -1.0, -1.0, 1.0, 0.5, 0.0, 1.0, 1.0,  1.0,  -1.0, 1.0, 0.5, 0.0, 1.0,
-                                          1.0,  1.0,  1.0,  1.0, 0.5, 0.0, 1.0, 1.0,  -1.0, 1.0,  1.0, 0.5, 0.0, 1.0,
+                                          1.0f,  -1.0f, -1.0f, 1.0f,  0.0f,  0.0f, // CUBE RIGHT FACE
+                                          1.0f,  1.0f,  -1.0f, 1.0f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,
+                                          1.0f,  0.0f,  0.0f,  1.0f,  -1.0f, 1.0f,  1.0f,  0.0f,  0.0f,
 
-                                          -1.0, -1.0, -1.0, 0.0, 0.5, 1.0, 1.0, -1.0, -1.0, 1.0,  0.0, 0.5, 1.0, 1.0,
-                                          1.0,  -1.0, 1.0,  0.0, 0.5, 1.0, 1.0, 1.0,  -1.0, -1.0, 0.0, 0.5, 1.0, 1.0,
+                                          -1.0f, -1.0f, -1.0f, 0.0f,  -1.0f, 0.0f, // CUBE BOTTOM FACE
+                                          -1.0f, -1.0f, 1.0f,  0.0f,  -1.0f, 0.0f,  1.0f,  -1.0f, 1.0f,
+                                          0.0f,  -1.0f, 0.0f,  1.0f,  -1.0f, -1.0f, 0.0f,  -1.0f, 0.0f,
 
-                                          -1.0, 1.0,  -1.0, 1.0, 0.0, 0.5, 1.0, -1.0, 1.0,  1.0,  1.0, 0.0, 0.5, 1.0,
-                                          1.0,  1.0,  1.0,  1.0, 0.0, 0.5, 1.0, 1.0,  1.0,  -1.0, 1.0, 0.0, 0.5, 1.0};
+                                          -1.0f, 1.0f,  -1.0f, 0.0f,  1.0f,  0.0f, // CUBE TOP FACE
+                                          -1.0f, 1.0f,  1.0f,  0.0f,  1.0f,  0.0f,  1.0f,  1.0f,  1.0f,
+                                          0.0f,  1.0f,  0.0f,  1.0f,  1.0f,  -1.0f, 0.0f,  1.0f,  0.0f};
 
     static const uint16_t cube_indices[] = {0,  1,  2,  0,  2,  3,  6,  5,  4,  7,  6,  4,  8,  9,  10, 8,  10, 11,
                                             14, 13, 12, 15, 14, 12, 16, 17, 18, 16, 18, 19, 22, 21, 20, 23, 22, 20};
+
     ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
     ecs_set(vd__state.ecs.world, e, vd__static_mesh,
             {position, scale, sg_make_buffer(&(sg_buffer_desc){.data = SG_RANGE(cube_vertices)}),
@@ -3475,7 +3488,7 @@ static void vd__v3d_depth_pass_init(vd__v3d_offscreen_pass *depth, sg_image dept
 
 static void vd__v3d_depth_pass_run(vd__v3d_offscreen_pass *depth, HMM_Mat4 model)
 {
-    vd__state.v3d.fwd.depth_uniforms.vs.mvp = vd__state.v3d.fwd.display_uniforms.mvp;
+    vd__state.v3d.fwd.depth_uniforms.vs.mvp = vd__state.v3d.fwd.display_uniforms.vs.mvp;
 
     vd__state.v3d.fwd.depth_uniforms.fs.far = 2500.0f;
     vd__state.v3d.fwd.depth_uniforms.fs.depth = 0.05f;
@@ -3565,39 +3578,40 @@ static void vd__v3d_scene_pass_init(vd__v3d_offscreen_pass *scene, vd__v3d_offsc
         .label = "shadow-pipeline"});
 }
 
-static void vd__v3d_shadow_pass_run(vd__v3d_offscreen_pass *shadow)
+static void vd__v3d_shadow_pass_run(vd__v3d_offscreen_pass *shadow, HMM_Mat4 light_view_proj)
 {
     sg_begin_pass(&(sg_pass){.action = shadow->pass_action, .attachments = shadow->atts});
     sg_apply_pipeline(vd__state.v3d.fwd.shadow.pip);
-
-    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_depth_vs_uniforms, &SG_RANGE(vd__state.v3d.fwd.depth_uniforms.vs));
-    sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_vd_v3d_depth_fs_uniforms, &SG_RANGE(vd__state.v3d.fwd.depth_uniforms.fs));
 
     ecs_iter_t it = ecs_query_iter(vd__state.ecs.world, vd__state.v3d.static_mesh_query);
     while (ecs_query_next(&it))
     {
         vd__static_mesh *mesh = ecs_field(&it, vd__static_mesh, 1);
+        for (int i = 0; i < it.count; i++)
+        {
+            if (i == 0)
+            {
+                vd__state.v3d.fwd.shadow_uniforms.mvp =
+                    HMM_MulM4(light_view_proj, HMM_MulM4(HMM_Scale(mesh[i].scale), HMM_Translate(mesh[i].position)));
+                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_shadow_vs_uniforms,
+                                  &SG_RANGE(vd__state.v3d.fwd.shadow_uniforms));
 
-        printf("drawing cube with %d indices in depth pass!!!\n", mesh->num_indices);
+                sg_bindings bind = (sg_bindings){.vertex_buffers[0] = mesh->vbuf, .index_buffer = mesh->ibuf};
 
-        sg_bindings bind = (sg_bindings){.vertex_buffers[0] = mesh->vbuf, .index_buffer = mesh->ibuf};
-
-        sg_apply_bindings(&bind);
-        sg_draw(0, mesh->num_indices, 1);
+                sg_apply_bindings(&bind);
+                sg_draw(0, mesh->num_indices, 1);
+            }
+        }
     }
     sg_end_pass();
 }
 
 static void vd__v3d_shadow_pass_init(vd__v3d_offscreen_pass *shadow, int size)
 {
-    shadow->pass_action = (sg_pass_action){
-        .depth =
-            {
-                .load_action = SG_LOADACTION_CLEAR,
-                .store_action = SG_STOREACTION_STORE,
-                .clear_value = 1.0f,
-            },
-    };
+    shadow->pass_action = (sg_pass_action){.colors[0] = {
+                                               .load_action = SG_LOADACTION_CLEAR,
+                                               .clear_value = {1.0f, 1.0f, 1.0f, 1.0f},
+                                           }};
 
     shadow->color_target = sg_make_image(&(sg_image_desc){
         .render_target = true,
@@ -3626,6 +3640,7 @@ static void vd__v3d_shadow_pass_init(vd__v3d_offscreen_pass *shadow, int size)
     });
 
     shadow->atts = sg_make_attachments(&(sg_attachments_desc){
+        .colors[0].image = shadow->color_target,
         .depth_stencil.image = shadow_depth_img,
         .label = "shadow-pass",
     });
@@ -3645,7 +3660,7 @@ static void vd__v3d_shadow_pass_init(vd__v3d_offscreen_pass *shadow, int size)
                             // render back-faces in shadow pass to prevent shadow acne on front-faces
                             .cull_mode = SG_CULLMODE_FRONT,
                             .sample_count = 1,
-                            .colors[0].pixel_format = SG_PIXELFORMAT_NONE,
+                            .colors[0].pixel_format = SG_PIXELFORMAT_RGBA8,
                             .depth =
                                 {
                                     .pixel_format = SG_PIXELFORMAT_DEPTH,
@@ -3664,8 +3679,8 @@ static void vd__v3d_display_pass_init(vd__v3d_display_pass *display)
     display->pip = sg_make_pipeline(&(sg_pipeline_desc){
         .layout = {.attrs =
                        {
-                           [ATTR_vd_v3d_display_vs_position].format = SG_VERTEXFORMAT_FLOAT3,
-                           [ATTR_vd_v3d_display_vs_color0].format = SG_VERTEXFORMAT_FLOAT4,
+                           [ATTR_vd_v3d_display_vs_pos].format = SG_VERTEXFORMAT_FLOAT3,
+                           [ATTR_vd_v3d_display_vs_norm].format = SG_VERTEXFORMAT_FLOAT3,
                        }},
         .shader = sg_make_shader(vd_v3d_display_shader_desc(sg_query_backend())),
         .index_type = SG_INDEXTYPE_UINT16,
@@ -3681,16 +3696,12 @@ static void vd__v3d_display_pass_init(vd__v3d_display_pass *display)
 
 static void vd__v3d_render(void)
 {
-    HMM_Vec3 d;
-    HMM_Vec3 orig = {0.0f, 0.0f, 0.0f};
-    HMM_Vec3 eye_dir = HMM_V3(vd__state.v3d.dbg.v.Elements[2][0], vd__state.v3d.dbg.v.Elements[2][1],
-                              vd__state.v3d.dbg.v.Elements[2][2]);
-    HMM_Vec3 eye_up = HMM_V3(vd__state.v3d.dbg.v.Elements[1][0], vd__state.v3d.dbg.v.Elements[1][1],
-                             vd__state.v3d.dbg.v.Elements[1][2]);
+    HMM_Vec3 light_pos = HMM_V3(50.0f, 50.0f, -50.0f);
+    HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, HMM_V3(0.0f, 0.0f, 0.0f), HMM_V3(0.0f, 1.0f, 0.0f));
+    HMM_Mat4 light_proj = HMM_Orthographic_RH_ZO(-5.0f, 5.0f, -5.0f, 5.0f, 0.0f, 100.0f);
+    HMM_Mat4 light_view_proj = HMM_MulM4(light_proj, light_view);
 
-    HMM_Vec3 right = HMM_Cross(eye_dir, eye_up);
-
-    // vd__v3d_shadow_pass_run(&vd__state.v3d.fwd.shadow);
+    vd__v3d_shadow_pass_run(&vd__state.v3d.fwd.shadow, light_view_proj);
 
     // vd__v3d_depth_pass_run(&vd__state.v3d.fwd.depth, model);
 
@@ -3710,14 +3721,29 @@ static void vd__v3d_render(void)
     {
         vd__static_mesh *mesh = ecs_field(&it, vd__static_mesh, 1);
 
+        sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_vd_v3d_display_fs_uniforms,
+                          &SG_RANGE(vd__state.v3d.fwd.display_uniforms.fs));
         for (int i = 0; i < it.count; i++)
         {
-            vd__state.v3d.fwd.display_uniforms.mvp =
-                HMM_MulM4(vd__state.v3d.dbg.vp, HMM_MulM4(HMM_Scale(mesh[i].scale), HMM_Translate(mesh[i].position)));
-            sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_display_vs_uniforms,
-                              &SG_RANGE(vd__state.v3d.fwd.display_uniforms));
+            HMM_Mat4 model = HMM_MulM4(HMM_Scale(mesh[i].scale), HMM_Translate(mesh[i].position));
+            vd__state.v3d.fwd.display_uniforms.vs.mvp = HMM_MulM4(vd__state.v3d.dbg.vp, model);
+            vd__state.v3d.fwd.display_uniforms.vs.model = model;
+            vd__state.v3d.fwd.display_uniforms.vs.light_mvp = HMM_MulM4(light_view_proj, model);
+            vd__state.v3d.fwd.display_uniforms.vs.diff_color =
+                i == 0 ? HMM_V3(1.0f, 0.72f, 0.01f) : HMM_V3(0.13f, 0.62f, 0.74f);
 
-            sg_bindings bind = (sg_bindings){.vertex_buffers[0] = mesh[i].vbuf, .index_buffer = mesh[i].ibuf};
+            vd__state.v3d.fwd.display_uniforms.fs.light_dir = HMM_NormV3(light_pos);
+            vd__state.v3d.fwd.display_uniforms.fs.eye_pos = vd__state.v3d.dbg.eye_pos;
+
+            sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_display_vs_uniforms,
+                              &SG_RANGE(vd__state.v3d.fwd.display_uniforms.vs));
+
+            sg_bindings bind = (sg_bindings){.vertex_buffers[0] = mesh[i].vbuf,
+                                             .index_buffer = mesh[i].ibuf,
+                                             .fs = {
+                                                 .images[SLOT_shadow_map] = vd__state.v3d.fwd.shadow.color_target,
+                                                 .samplers[SLOT_shadow_sampler] = vd__state.v3d.fwd.shadow.sampler,
+                                             }};
 
             sg_apply_bindings(&bind);
             sg_draw(0, mesh[i].num_indices, 1);
