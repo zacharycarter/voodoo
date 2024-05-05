@@ -98,8 +98,11 @@ rem cook art
 
 @REM compile shaders
 @REM call .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\shapes.glsl -o .\assets\shaders\wgsl\shapes.glsl.h -l wgsl -r
-@REM call .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\shadows.glsl -o .\assets\shaders\wgsl\shadows.glsl.h -l wgsl -r
+call .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\depth.glsl -o .\assets\shaders\wgsl\depth.glsl.h -l wgsl -r
+call .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\scene.glsl -o .\assets\shaders\wgsl\scene.glsl.h -l wgsl -r
+call .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\shadows.glsl -o .\assets\shaders\wgsl\shadows.glsl.h -l wgsl -r
 call .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\display.glsl -o .\assets\shaders\wgsl\display.glsl.h -l wgsl -r
+
 
 @REM compile and launch
 @REM emcc %* -g -O0 -I.\shaders\wgsl -I.\thirdparty -I.\thirdparty\c89atomic -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\flecs -I.\thirdparty\sx\include -I.\thirdparty\stackwalkerc -I.\thirdparty\cj5 -I.\thirdparty\sort -I.\thirdparty\hmm -I.\thirdparty\dds-ktx -I.\thirdparty\stb -I.\thirdparty\cdbgui -o index.html -s USE_WEBGPU=1 -s PRECISE_F32=1 -s STACK_SIZE=5MB -s TOTAL_MEMORY=256mb -s ENVIRONMENT=worker,web --shell-file shell.html -Wfatal-errors --preload-file .\data -s ALLOW_MEMORY_GROWTH=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=8 -s ASSERTIONS=1 -s ASYNCIFY=1 && start "" http://localhost:9999

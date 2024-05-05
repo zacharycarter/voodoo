@@ -9,7 +9,9 @@
                                   :latitude 45.0
                                   :longitude 45.0
                                   :nearz 0.01
-                                  :farz 2000.0})))
+                                  :farz 2000.0}))
+  (v3d/cube @[0.0 2.5 0.0] @[1.0 1.0 1.0])
+  (v3d/cube @[0.0 0.9375 0.0] @[5.0 0.125 5.0]))
 
   # (set (state :doll) (v3d/doll "ozz_skin"))
 
@@ -19,8 +21,7 @@
 (defn update []
   (cam/update (state :camera))
   (dbg/draw/camera (state :camera))
-  (dbg/draw/grid 0)
-  (dbg/draw/cube @[0.0 0.5 0.0]))
+  (dbg/draw/grid 0))
 
 (defn shutdown [])
 
