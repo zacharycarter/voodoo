@@ -135,8 +135,10 @@ static const JanetReg vd__cfuns[] = {
 
 #include "depth.glsl.h"
 #include "display.glsl.h"
+#include "doll.glsl.h"
 #include "scene.glsl.h"
 #include "shadows.glsl.h"
+#include "shadows_doll.glsl.h"
 #include "shapes.glsl.h"
 
 #define vd__to_id(index) ((uint32_t)(index) + 1)
@@ -571,6 +573,7 @@ typedef struct
 {
     sg_pass_action pass_action;
     sg_pipeline pip;
+    sg_pipeline pip_2;
 } vd__v3d_display_pass;
 
 typedef struct
@@ -681,6 +684,10 @@ static struct
         const sx_alloc *heap_alloc;
         sx_alloc *alloc;
 
+        uint64_t delta_tick;
+        uint64_t elapsed_tick;
+        uint64_t last_tick;
+
         sx_job_context *jobs;
 
         uint32_t flags;
@@ -753,6 +760,11 @@ static struct
             } display_uniforms;
             struct
             {
+                vd_v3d_doll_vs_uniforms_t vs;
+                vd_v3d_doll_fs_uniforms_t fs;
+            } doll_uniforms;
+            struct
+            {
                 HMM_Vec3 ambient;
                 HMM_Vec3 direction;
                 HMM_Vec3 color;
@@ -760,8 +772,10 @@ static struct
                 float intensity;
             } light_uniforms;
             vd_v3d_shadow_vs_uniforms_t shadow_uniforms;
+            vd_v3d_shadow_doll_vs_uniforms_t shadow_doll_uniforms;
         } fwd;
 
+        ecs_query_t *doll_query;
         ecs_query_t *static_mesh_query;
     } v3d;
 
@@ -1379,6 +1393,7 @@ static void vd__asset_update();
 
 void vd__dbg_draw();
 static void vd__v3d_render();
+static void vd__v3d_update();
 
 static _Thread_local vd__tmp_alloc_tls tl_tmp_alloc;
 
@@ -1554,6 +1569,11 @@ static const sx_alloc *vd__core_heap_alloc(void)
     return vd__state.core.heap_alloc;
 }
 
+static float vd__core_delta_time(void)
+{
+    return (float)stm_sec(vd__state.core.delta_tick);
+}
+
 int64_t vd__core_frame_index(void)
 {
     return vd__state.core.frame_idx;
@@ -1561,6 +1581,12 @@ int64_t vd__core_frame_index(void)
 
 static void vd__core_update(void)
 {
+    vd__state.core.delta_tick = stm_laptime(&vd__state.core.last_tick);
+    vd__state.core.elapsed_tick += vd__state.core.delta_tick;
+
+    uint64_t delta_tick = vd__state.core.delta_tick;
+    float dt = (float)stm_sec(delta_tick);
+
     // reset temp allocators
     sx_mutex_enter(&vd__state.core.tmp_allocs_mtx);
     for (int i = 0, c = sx_array_count(vd__state.core.tmp_allocs); i < c; i++)
@@ -1644,6 +1670,7 @@ static void vd__core_update(void)
 
     vd__vfs_update();
     vd__asset_update();
+    vd__v3d_update();
     vd__v3d_render();
 }
 
@@ -3271,6 +3298,15 @@ static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv)
 
 typedef struct
 {
+    float time_factor;
+    double time_sec;
+    sg_buffer vertex_buffer;
+    sg_buffer index_buffer;
+    vd__v3d_doll *doll;
+} vd__doll;
+
+typedef struct
+{
     HMM_Vec3 position;
     HMM_Vec3 scale;
     sg_buffer vbuf;
@@ -3278,6 +3314,7 @@ typedef struct
     uint32_t num_indices;
 } vd__static_mesh;
 
+ECS_COMPONENT_DECLARE(vd__doll);
 ECS_COMPONENT_DECLARE(vd__static_mesh);
 
 typedef struct vd__animation_load_params vd__animation_load_params;
@@ -3377,11 +3414,23 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
     sx_mem_block *skeleton_mem = sx_file_load_bin(alloc, skeleton_filepath);
     ozz_load_skeleton(doll->ozz, skeleton_mem->data, skeleton_mem->size);
 
+    printf("skeleton loaded from %s: %s\n", skeleton_filepath, ozz_load_failed(doll->ozz) ? "true" : "false");
+
     sx_mem_block *animation_mem = sx_file_load_bin(alloc, animation_filepath);
     ozz_load_animation(doll->ozz, animation_mem->data, animation_mem->size);
 
+    printf("animation loaded from %s: %s\n", animation_filepath, ozz_load_failed(doll->ozz) ? "true" : "false");
+
     sx_mem_block *mesh_mem = sx_file_load_bin(alloc, mesh_filepath);
-    ozz_load_skeleton(doll->ozz, mesh_mem->data, mesh_mem->size);
+    ozz_load_mesh(doll->ozz, mesh_mem->data, mesh_mem->size);
+
+    printf("mesh loaded from %s: %s\n", mesh_filepath, ozz_load_failed(doll->ozz) ? "true" : "false");
+
+    printf("all loaded: %s\n", ozz_all_loaded(doll->ozz) ? "true" : "false");
+
+    ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
+    ecs_set(vd__state.ecs.world, e, vd__doll,
+            {0.0f, 0.0, ozz_vertex_buffer(doll->ozz), ozz_index_buffer(doll->ozz), doll});
 
     printf("done preparing doll!\n");
     return (vd__asset_load_data){.obj.ptr = doll};
@@ -3589,18 +3638,45 @@ static void vd__v3d_shadow_pass_run(vd__v3d_offscreen_pass *shadow, HMM_Mat4 lig
         vd__static_mesh *mesh = ecs_field(&it, vd__static_mesh, 1);
         for (int i = 0; i < it.count; i++)
         {
-            if (i == 0)
-            {
-                vd__state.v3d.fwd.shadow_uniforms.mvp =
-                    HMM_MulM4(light_view_proj, HMM_MulM4(HMM_Scale(mesh[i].scale), HMM_Translate(mesh[i].position)));
-                sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_shadow_vs_uniforms,
-                                  &SG_RANGE(vd__state.v3d.fwd.shadow_uniforms));
+            vd__state.v3d.fwd.shadow_uniforms.mvp =
+                HMM_MulM4(light_view_proj, HMM_MulM4(HMM_Scale(mesh[i].scale), HMM_Translate(mesh[i].position)));
+            sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_shadow_vs_uniforms,
+                              &SG_RANGE(vd__state.v3d.fwd.shadow_uniforms));
 
-                sg_bindings bind = (sg_bindings){.vertex_buffers[0] = mesh->vbuf, .index_buffer = mesh->ibuf};
+            sg_bindings bind = (sg_bindings){.vertex_buffers[0] = mesh->vbuf, .index_buffer = mesh->ibuf};
 
-                sg_apply_bindings(&bind);
-                sg_draw(0, mesh->num_indices, 1);
-            }
+            sg_apply_bindings(&bind);
+            sg_draw(0, mesh->num_indices, 1);
+        }
+    }
+
+    sg_apply_pipeline(vd__state.v3d.fwd.shadow.pip_2);
+
+    ecs_iter_t dit = ecs_query_iter(vd__state.ecs.world, vd__state.v3d.doll_query);
+    while (ecs_query_next(&dit))
+    {
+        vd__doll *d = ecs_field(&dit, vd__doll, 1);
+
+        for (int i = 0; i < dit.count; i++)
+        {
+            HMM_Mat4 model = HMM_Translate(HMM_V3(0.0f, 0.0f, 0.0f));
+            vd__state.v3d.fwd.shadow_doll_uniforms.mvp = HMM_MulM4(light_view_proj, model);
+            vd__state.v3d.fwd.shadow_doll_uniforms.joint_uv =
+                HMM_V2(ozz_joint_texture_u(d[i].doll->ozz), ozz_joint_texture_v(d[i].doll->ozz));
+            vd__state.v3d.fwd.shadow_doll_uniforms.joint_pixel_width = ozz_joint_texture_pixel_width();
+
+            sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_shadow_doll_vs_uniforms,
+                              &SG_RANGE(vd__state.v3d.fwd.shadow_doll_uniforms));
+
+            sg_bindings bind = (sg_bindings){.vertex_buffers[0] = ozz_vertex_buffer(d[i].doll->ozz),
+                                             .index_buffer = ozz_index_buffer(d[i].doll->ozz),
+                                             .vs = {
+                                                 .images[SLOT_joint_tex] = ozz_joint_texture(),
+                                                 .samplers[SLOT_smp] = ozz_joint_sampler(),
+                                             }};
+
+            sg_apply_bindings(&bind);
+            sg_draw(0, ozz_num_triangle_indices(d[i].doll->ozz), 1);
         }
     }
     sg_end_pass();
@@ -3668,6 +3744,42 @@ static void vd__v3d_shadow_pass_init(vd__v3d_offscreen_pass *shadow, int size)
                                     .write_enabled = true,
                                 },
                             .label = "shadow-pipeline"});
+
+    shadow->pip_2 =
+        sg_make_pipeline(
+            &(sg_pipeline_desc){
+                .layout =
+                    {
+                        .buffers[0].stride = sizeof(ozz_vertex_t),
+                        .attrs =
+                            {
+                                [ATTR_vd_v3d_shadow_doll_vs_position] = {.format = SG_VERTEXFORMAT_FLOAT3,
+                                                                         .offset = offsetof(ozz_vertex_t, position)},
+                                [ATTR_vd_v3d_shadow_doll_vs_normal] = {.format = SG_VERTEXFORMAT_BYTE4N,
+                                                                       .offset = offsetof(ozz_vertex_t, normal)},
+                                [ATTR_vd_v3d_shadow_doll_vs_joint_indices] = {.format = SG_VERTEXFORMAT_UBYTE4N,
+                                                                              .offset =
+                                                                                  offsetof(ozz_vertex_t,
+                                                                                           joint_indices)},
+                                [ATTR_vd_v3d_shadow_doll_vs_joint_weights] = {.format = SG_VERTEXFORMAT_UBYTE4N,
+                                                                              .offset =
+                                                                                  offsetof(ozz_vertex_t,
+                                                                                           joint_weights)},
+                            },
+                    },
+                .shader = sg_make_shader(vd_v3d_shadow_doll_shader_desc(sg_query_backend())),
+                .index_type = SG_INDEXTYPE_UINT16,
+                .face_winding = SG_FACEWINDING_CCW,
+                .cull_mode = SG_CULLMODE_FRONT,
+                .sample_count = 1,
+                .colors[0].pixel_format = SG_PIXELFORMAT_RGBA8,
+                .depth =
+                    {
+                        .pixel_format = SG_PIXELFORMAT_DEPTH,
+                        .compare = SG_COMPAREFUNC_LESS_EQUAL,
+                        .write_enabled = true,
+                    },
+                .label = "shadow-doll-pipeline"});
 }
 
 static void vd__v3d_display_pass_init(vd__v3d_display_pass *display)
@@ -3692,6 +3804,53 @@ static void vd__v3d_display_pass_init(vd__v3d_display_pass *display)
             },
         .label = "display-pipeline",
     });
+
+    display->pip_2 =
+        sg_make_pipeline(
+            &(sg_pipeline_desc){
+                .layout =
+                    {.attrs =
+                         {
+                             [ATTR_vd_v3d_doll_vs_position] = {.format = SG_VERTEXFORMAT_FLOAT3,
+                                                               .offset = offsetof(ozz_vertex_t, position)},
+                             [ATTR_vd_v3d_doll_vs_normal] = {.format = SG_VERTEXFORMAT_BYTE4N,
+                                                             .offset = offsetof(ozz_vertex_t, normal)},
+                             [ATTR_vd_v3d_doll_vs_joint_indices] = {.format = SG_VERTEXFORMAT_UBYTE4N,
+                                                                    .offset = offsetof(ozz_vertex_t, joint_indices)},
+                             [ATTR_vd_v3d_doll_vs_joint_weights] = {.format = SG_VERTEXFORMAT_UBYTE4N,
+                                                                    .offset = offsetof(ozz_vertex_t, joint_weights)},
+                         },
+                     .buffers[0].stride = sizeof(ozz_vertex_t)},
+                .shader = sg_make_shader(vd_v3d_doll_shader_desc(sg_query_backend())),
+                .index_type = SG_INDEXTYPE_UINT16,
+                .face_winding = SG_FACEWINDING_CCW,
+                .cull_mode = SG_CULLMODE_BACK,
+                .depth =
+                    {
+                        .compare = SG_COMPAREFUNC_LESS_EQUAL,
+                        .write_enabled = true,
+                    },
+                .label = "doll-pipeline",
+            });
+}
+
+static void vd__v3d_update()
+{
+    ecs_iter_t it = ecs_query_iter(vd__state.ecs.world, vd__state.v3d.doll_query);
+    while (ecs_query_next(&it))
+    {
+        vd__doll *d = ecs_field(&it, vd__doll, 1);
+
+        for (int i = 0; i < it.count; i++)
+        {
+            if (ozz_all_loaded(d[i].doll->ozz))
+            {
+                d[i].time_sec += vd__core_delta_time();
+                ozz_update_instance(d[i].doll->ozz, d[i].time_sec);
+                ozz_update_joint_texture();
+            }
+        }
+    }
 }
 
 static void vd__v3d_render(void)
@@ -3716,13 +3875,16 @@ static void vd__v3d_render(void)
 
     sg_apply_pipeline(vd__state.v3d.fwd.display.pip);
 
+    vd__state.v3d.fwd.display_uniforms.fs.light_dir = HMM_NormV3(light_pos);
+    vd__state.v3d.fwd.display_uniforms.fs.eye_pos = vd__state.v3d.dbg.eye_pos;
+    sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_vd_v3d_display_fs_uniforms,
+                      &SG_RANGE(vd__state.v3d.fwd.display_uniforms.fs));
+
     ecs_iter_t it = ecs_query_iter(vd__state.ecs.world, vd__state.v3d.static_mesh_query);
     while (ecs_query_next(&it))
     {
         vd__static_mesh *mesh = ecs_field(&it, vd__static_mesh, 1);
 
-        sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_vd_v3d_display_fs_uniforms,
-                          &SG_RANGE(vd__state.v3d.fwd.display_uniforms.fs));
         for (int i = 0; i < it.count; i++)
         {
             HMM_Mat4 model = HMM_MulM4(HMM_Scale(mesh[i].scale), HMM_Translate(mesh[i].position));
@@ -3731,9 +3893,6 @@ static void vd__v3d_render(void)
             vd__state.v3d.fwd.display_uniforms.vs.light_mvp = HMM_MulM4(light_view_proj, model);
             vd__state.v3d.fwd.display_uniforms.vs.diff_color =
                 i == 0 ? HMM_V3(1.0f, 0.72f, 0.01f) : HMM_V3(0.13f, 0.62f, 0.74f);
-
-            vd__state.v3d.fwd.display_uniforms.fs.light_dir = HMM_NormV3(light_pos);
-            vd__state.v3d.fwd.display_uniforms.fs.eye_pos = vd__state.v3d.dbg.eye_pos;
 
             sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_display_vs_uniforms,
                               &SG_RANGE(vd__state.v3d.fwd.display_uniforms.vs));
@@ -3749,6 +3908,51 @@ static void vd__v3d_render(void)
             sg_draw(0, mesh[i].num_indices, 1);
         }
     }
+
+    sg_apply_pipeline(vd__state.v3d.fwd.display.pip_2);
+
+    vd__state.v3d.fwd.doll_uniforms.fs.light_dir = HMM_NormV3(light_pos);
+    vd__state.v3d.fwd.doll_uniforms.fs.eye_pos = vd__state.v3d.dbg.eye_pos;
+
+    sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_vd_v3d_doll_fs_uniforms, &SG_RANGE(vd__state.v3d.fwd.doll_uniforms.fs));
+
+    ecs_iter_t dit = ecs_query_iter(vd__state.ecs.world, vd__state.v3d.doll_query);
+    while (ecs_query_next(&dit))
+    {
+        vd__doll *d = ecs_field(&dit, vd__doll, 1);
+
+        for (int i = 0; i < dit.count; i++)
+        {
+            HMM_Mat4 model = HMM_Translate(HMM_V3(0.0f, 0.0f, 0.0f));
+            vd__state.v3d.fwd.doll_uniforms.vs.mvp = HMM_MulM4(vd__state.v3d.dbg.vp, model);
+            vd__state.v3d.fwd.doll_uniforms.vs.model = model;
+            vd__state.v3d.fwd.doll_uniforms.vs.joint_uv =
+                HMM_V2(ozz_joint_texture_u(d[i].doll->ozz), ozz_joint_texture_v(d[i].doll->ozz));
+            vd__state.v3d.fwd.doll_uniforms.vs.joint_pixel_width = ozz_joint_texture_pixel_width();
+            vd__state.v3d.fwd.doll_uniforms.vs.light_mvp = HMM_MulM4(light_view_proj, model);
+            vd__state.v3d.fwd.doll_uniforms.vs.diff_color =
+                i == 0 ? HMM_V3(1.0f, 0.72f, 0.01f) : HMM_V3(0.13f, 0.62f, 0.74f);
+
+            sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vd_v3d_doll_vs_uniforms,
+                              &SG_RANGE(vd__state.v3d.fwd.doll_uniforms.vs));
+
+            sg_bindings bind = (sg_bindings){.vertex_buffers[0] = ozz_vertex_buffer(d[i].doll->ozz),
+                                             .index_buffer = ozz_index_buffer(d[i].doll->ozz),
+                                             .vs =
+                                                 {
+                                                     .images[SLOT_joint_tex] = ozz_joint_texture(),
+                                                     .samplers[SLOT_smp] = ozz_joint_sampler(),
+                                                 },
+                                             .fs = {
+                                                 .images[SLOT_shadow_map] = vd__state.v3d.fwd.shadow.color_target,
+                                                 .samplers[SLOT_shadow_sampler] = vd__state.v3d.fwd.shadow.sampler,
+                                             }};
+
+            sg_apply_bindings(&bind);
+            sg_draw(0, ozz_num_triangle_indices(d[i].doll->ozz), 1);
+        }
+    }
+
     sg_end_pass();
     sg_commit();
     // sg_begin_pass(state.shadow.pass, &state.shadow.pass_action);
@@ -3786,11 +3990,12 @@ static void vd__v3d_init()
                                   "vd__doll_load_params", sizeof(vd__v3d_doll_load_params), (vd__asset_obj){0},
                                   (vd__asset_obj){0}, VD__ASSET_LOAD_FLAG_TEXT_FILE);
 
+    ECS_COMPONENT_DEFINE(vd__state.ecs.world, vd__doll);
     ECS_COMPONENT_DEFINE(vd__state.ecs.world, vd__static_mesh);
 
+    vd__state.v3d.doll_query = ecs_query_new(vd__state.ecs.world, "vd__doll");
     vd__state.v3d.static_mesh_query = ecs_query_new(vd__state.ecs.world, "vd__static_mesh");
 
-    vd__v3d_scene_pass_init(&vd__state.v3d.fwd.scene, &vd__state.v3d.fwd.depth);
     vd__v3d_shadow_pass_init(&vd__state.v3d.fwd.shadow, VD__CONFIG_SHADOW_MAP_SIZE);
     vd__v3d_display_pass_init(&vd__state.v3d.fwd.display);
 }
@@ -3935,6 +4140,8 @@ void vd__app_update(void)
 
 sapp_desc sokol_main(int argc, char *argv[])
 {
+    stm_setup();
+
     sargs_setup(&(sargs_desc){.argc = argc, .argv = argv});
 
     const char *mod = NULL, *err = NULL;
