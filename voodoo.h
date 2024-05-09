@@ -52,6 +52,7 @@ static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv);
 
 static Janet cfun_vd_v3d_cube(int32_t argc, Janet *argv);
+static Janet cfun_vd_v3d_doll(int32_t argc, Janet *argv);
 static Janet cfun_vd_v3d_draw(int32_t argc, Janet *argv);
 // static Janet cfun_vd_ecs_component(int32_t argc, Janet *argv);
 
@@ -69,8 +70,8 @@ static const JanetReg vd__cfuns[] = {
     {"dbg/draw/grid", cfun_vd_dbg_draw_grid, "(voodoo/dbg/draw/grid)\n\nDraw a debug grid."},
     {"v3d/cube", cfun_vd_v3d_cube, "(voodoo/v3d/cube)\n\nCreate a cube."},
     {"v3d/draw", cfun_vd_v3d_draw, "(voodoo/v3d/draw)\n\nDraw a frame."},
+    {"v3d/doll", cfun_vd_v3d_doll, "(voodoo/v3d/doll)\n\nCreate a doll."},
     // {"ecs/component", cfun_vd_ecs_component, "(voodoo/ecs/component)\n\nCreate a component."},
-    // {"v3d/doll", cfun_vd_v3d_doll, "(voodoo/v3d/doll)\n\nCreate a doll asset."}
     {NULL, NULL, NULL}};
 #endif // VOODOO_INCLUDED
 
@@ -2793,8 +2794,9 @@ void vd__asset_shutdown()
 static Janet cfun_vd_asset_load(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 2);
-    vd__asset_load(janet_getcstring(argv, 0), janet_getcstring(argv, 1), &(vd__v3d_doll_load_params){}, 0, NULL, 0);
-    return janet_wrap_nil();
+    vd__asset_handle hnd = vd__asset_load(janet_getcstring(argv, 0), janet_getcstring(argv, 1),
+                                          &(vd__v3d_doll_load_params){}, VD__ASSET_LOAD_FLAG_WAIT_ON_LOAD, NULL, 0);
+    return janet_wrap_abstract(&hnd);
 }
 
 //   __________  __
@@ -2933,8 +2935,6 @@ static void vd__script_shutdown(void)
 // \___/_/ |_/_/  /_/___/_/|_/_/ |_|
 //
 // >>camera
-
-static const JanetAbstractType vd__cam_event = {"voodoo/cam/event", JANET_ATEND_NAME};
 
 #define CAMERA_DEFAULT_MIN_DIST (2.0f)
 #define CAMERA_DEFAULT_MAX_DIST (30.0f)
@@ -3451,10 +3451,6 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
     printf("mesh loaded from %s: %s\n", mesh_filepath, ozz_load_failed(doll->ozz) ? "true" : "false");
 
     printf("all loaded: %s\n", ozz_all_loaded(doll->ozz) ? "true" : "false");
-
-    ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
-    ecs_set(vd__state.ecs.world, e, vd__doll,
-            {0.0f, 0.0, ozz_vertex_buffer(doll->ozz), ozz_index_buffer(doll->ozz), doll});
 
     printf("done preparing doll!\n");
     return (vd__asset_load_data){.obj.ptr = doll};
@@ -4029,6 +4025,17 @@ static Janet cfun_vd_v3d_cube(int32_t argc, Janet *argv)
     janet_fixarity(argc, 2);
     vd__v3d_cube(vd__unwrap_vec3(argv[0]), vd__unwrap_vec3(argv[1]));
     return janet_wrap_nil();
+}
+
+static Janet cfun_vd_v3d_doll(int32_t argc, Janet *argv)
+{
+    janet_fixarity(argc, 1);
+    vd__asset_handle *hnd = (vd__asset_handle *)janet_unwrap_abstract(argv[0]);
+    vd__v3d_doll *doll = (vd__v3d_doll *)vd__asset_obj_get(*hnd).ptr;
+    ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
+    ecs_set(vd__state.ecs.world, e, vd__doll,
+            {0.0f, 0.0, ozz_vertex_buffer(doll->ozz), ozz_index_buffer(doll->ozz), doll});
+    return janet_wrap_u64(e);
 }
 
 static Janet cfun_vd_v3d_draw(int32_t argc, Janet *argv)
