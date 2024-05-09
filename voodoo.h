@@ -41,7 +41,9 @@ extern void jsfun_vd_app_update(void);
 static Janet cfun_vd_app_width(int32_t argc, Janet *argv);
 static Janet cfun_vd_app_height(int32_t argc, Janet *argv);
 
-static Janet cfun_vd_cam_new(int32_t argc, Janet *argv);
+static Janet cfun_vd_asset_load(int32_t argc, Janet *argv);
+
+static Janet cfun_vd_cam_orbit(int32_t argc, Janet *argv);
 static Janet cfun_vd_cam_handle_event(int32_t argc, Janet *argv);
 static Janet cfun_vd_cam_update(int32_t argc, Janet *argv);
 
@@ -50,12 +52,14 @@ static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv);
 
 static Janet cfun_vd_v3d_cube(int32_t argc, Janet *argv);
+static Janet cfun_vd_v3d_draw(int32_t argc, Janet *argv);
 // static Janet cfun_vd_ecs_component(int32_t argc, Janet *argv);
 
 static const JanetReg vd__cfuns[] = {
     {"app/width", cfun_vd_app_width, "(voodoo/app/width)\n\nWidth of the current application."},
     {"app/height", cfun_vd_app_height, "(voodoo/app/height)\n\nHeight of the current application."},
-    {"cam/new", cfun_vd_cam_new, "(voodoo/cam/new)\n\nCreates a new camera."},
+    {"asset/load", cfun_vd_asset_load, "(voodoo/asset/load)\n\nLoad an asset."},
+    {"cam/orbit", cfun_vd_cam_orbit, "(voodoo/cam/orbit)\n\nCreate a new orbit camera."},
     {"cam/handle-event", cfun_vd_cam_handle_event,
      "(voodoo/cam/handle-event)\n\nHandle an event with an existing camera."},
     {"cam/update", cfun_vd_cam_update, "(voodoo/cam/update)\n\nUpdate an existing camera."},
@@ -64,6 +68,7 @@ static const JanetReg vd__cfuns[] = {
     {"dbg/draw/cube", cfun_vd_dbg_draw_cube, "(voodoo/dbg/draw/cube)\n\nDraw a debug cube."},
     {"dbg/draw/grid", cfun_vd_dbg_draw_grid, "(voodoo/dbg/draw/grid)\n\nDraw a debug grid."},
     {"v3d/cube", cfun_vd_v3d_cube, "(voodoo/v3d/cube)\n\nCreate a cube."},
+    {"v3d/draw", cfun_vd_v3d_draw, "(voodoo/v3d/draw)\n\nDraw a frame."},
     // {"ecs/component", cfun_vd_ecs_component, "(voodoo/ecs/component)\n\nCreate a component."},
     // {"v3d/doll", cfun_vd_v3d_doll, "(voodoo/v3d/doll)\n\nCreate a doll asset."}
     {NULL, NULL, NULL}};
@@ -366,6 +371,41 @@ typedef struct vd__asset_group
 {
     vd__asset_handle *SX_ARRAY assets;
 } vd__asset_group;
+
+typedef struct
+{
+    float min_dist;
+    float max_dist;
+    float min_lat;
+    float max_lat;
+    float distance;
+    float latitude;
+    float longitude;
+    float aspect;
+    float nearz;
+    float farz;
+    HMM_Vec3 center;
+} vd__camera_desc;
+
+typedef struct
+{
+    float min_dist;
+    float max_dist;
+    float min_lat;
+    float max_lat;
+    float distance;
+    float latitude;
+    float longitude;
+    float aspect;
+    float nearz;
+    float farz;
+    HMM_Vec3 center;
+    HMM_Vec3 eye_pos;
+    HMM_Vec3 eye_dir;
+    HMM_Mat4 view;
+    HMM_Mat4 proj;
+    HMM_Mat4 view_proj;
+} vd__camera;
 
 enum
 {
@@ -1392,7 +1432,7 @@ static void vd__vfs_update();
 static void vd__asset_update();
 
 void vd__dbg_draw();
-static void vd__v3d_render();
+static void vd__v3d_render(vd__camera *cam);
 static void vd__v3d_update();
 
 static _Thread_local vd__tmp_alloc_tls tl_tmp_alloc;
@@ -1671,7 +1711,6 @@ static void vd__core_update(void)
     vd__vfs_update();
     vd__asset_update();
     vd__v3d_update();
-    vd__v3d_render();
 }
 
 static void vd__core_job_thread_init_cb(sx_job_context *ctx, int thread_index, uint32_t thread_id, void *user)
@@ -2071,6 +2110,11 @@ static const sx_alloc *vd__vfs_alloc(void)
 // /_/ |_/___/___/___/ /_/
 //
 // >>asset
+
+typedef struct
+{
+
+} vd__v3d_doll_load_params;
 
 static inline void vd__asset_job_add_list(vd__asset_async_job **pfirst, vd__asset_async_job **plast,
                                           vd__asset_async_job *node)
@@ -2596,6 +2640,16 @@ static void vd__asset_register_asset_type(const char *name, vd__asset_callbacks 
     sx_array_push(vd__state.asset.alloc, vd__state.asset.asset_name_hashes, name_hash);
 }
 
+static vd__asset_obj vd__asset_obj_get(vd__asset_handle asset)
+{
+    vd__asset_obj obj;
+    sx_lock(vd__state.asset.assets_lk)
+    {
+        obj = vd__state.asset.assets[sx_handle_index(asset.id)].obj;
+    }
+    return obj;
+}
+
 static void vd__asset_update()
 {
     vd__asset_async_job *ajob = vd__state.asset.async_job_list;
@@ -2736,6 +2790,13 @@ void vd__asset_shutdown()
     vd__state.asset.alloc = NULL;
 }
 
+static Janet cfun_vd_asset_load(int32_t argc, Janet *argv)
+{
+    janet_fixarity(argc, 2);
+    vd__asset_load(janet_getcstring(argv, 0), janet_getcstring(argv, 1), &(vd__v3d_doll_load_params){}, 0, NULL, 0);
+    return janet_wrap_nil();
+}
+
 //   __________  __
 //  / ___/ __/ |/_/
 // / (_ / _/_>  <
@@ -2873,7 +2934,6 @@ static void vd__script_shutdown(void)
 //
 // >>camera
 
-static const JanetAbstractType vd__cam_camera = {"voodoo/cam/camera", JANET_ATEND_NAME};
 static const JanetAbstractType vd__cam_event = {"voodoo/cam/event", JANET_ATEND_NAME};
 
 #define CAMERA_DEFAULT_MIN_DIST (2.0f)
@@ -2885,64 +2945,37 @@ static const JanetAbstractType vd__cam_event = {"voodoo/cam/event", JANET_ATEND_
 #define CAMERA_DEFAULT_NEARZ (0.01f)
 #define CAMERA_DEFAULT_FARZ (100.0f)
 
-typedef struct
-{
-    float min_dist;
-    float max_dist;
-    float min_lat;
-    float max_lat;
-    float distance;
-    float latitude;
-    float longitude;
-    float aspect;
-    float nearz;
-    float farz;
-    HMM_Vec3 center;
-} vd__camera_desc;
-
-typedef struct
-{
-    float min_dist;
-    float max_dist;
-    float min_lat;
-    float max_lat;
-    float distance;
-    float latitude;
-    float longitude;
-    float aspect;
-    float nearz;
-    float farz;
-    HMM_Vec3 center;
-    HMM_Vec3 eye_pos;
-    HMM_Vec3 eye_dir;
-    HMM_Mat4 view;
-    HMM_Mat4 proj;
-    HMM_Mat4 view_proj;
-} vd__camera;
+ECS_COMPONENT_DECLARE(vd__camera);
 
 static float vd__cam_def(float val, float def)
 {
     return ((val == 0.0f) ? def : val);
 }
 
-static void vd__cam_init(vd__camera *cam, const vd__camera_desc *desc)
+static ecs_entity_t vd__cam_create(const vd__camera_desc *desc)
 {
     assert(desc);
-    memset(cam, 0, sizeof(vd__camera));
-    cam->min_dist = vd__cam_def(desc->min_dist, CAMERA_DEFAULT_MIN_DIST);
-    cam->max_dist = vd__cam_def(desc->max_dist, CAMERA_DEFAULT_MAX_DIST);
-    cam->min_lat = vd__cam_def(desc->min_lat, CAMERA_DEFAULT_MIN_LAT);
-    cam->max_lat = vd__cam_def(desc->max_lat, CAMERA_DEFAULT_MAX_LAT);
-    cam->distance = vd__cam_def(desc->distance, CAMERA_DEFAULT_DIST);
-    cam->center = desc->center;
-    cam->latitude = desc->latitude;
-    cam->longitude = desc->longitude;
-    cam->aspect = vd__cam_def(desc->aspect, CAMERA_DEFAULT_ASPECT);
-    cam->nearz = vd__cam_def(desc->nearz, CAMERA_DEFAULT_NEARZ);
-    cam->farz = vd__cam_def(desc->farz, CAMERA_DEFAULT_FARZ);
-    cam->view = HMM_M4D(1.0f);
-    cam->proj = HMM_M4D(1.0f);
-    cam->view_proj = HMM_M4D(1.0f);
+
+    ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
+    return ecs_set(vd__state.ecs.world, e, vd__camera,
+                   {
+                       vd__cam_def(desc->min_dist, CAMERA_DEFAULT_MIN_DIST),
+                       vd__cam_def(desc->max_dist, CAMERA_DEFAULT_MAX_DIST),
+                       vd__cam_def(desc->min_lat, CAMERA_DEFAULT_MIN_LAT),
+                       vd__cam_def(desc->max_lat, CAMERA_DEFAULT_MAX_LAT),
+                       vd__cam_def(desc->distance, CAMERA_DEFAULT_DIST),
+                       desc->latitude,
+                       desc->longitude,
+                       vd__cam_def(desc->aspect, CAMERA_DEFAULT_ASPECT),
+                       vd__cam_def(desc->nearz, CAMERA_DEFAULT_NEARZ),
+                       vd__cam_def(desc->farz, CAMERA_DEFAULT_FARZ),
+                       desc->center,
+                       HMM_V3(0.0, 0.0, 0.0),
+                       HMM_V3(0.0, 0.0, 0.0),
+                       HMM_M4D(1.0f),
+                       HMM_M4D(1.0f),
+                       HMM_M4D(1.0f),
+                   });
 }
 
 static void vd__cam_orbit(vd__camera *cam, float dx, float dy)
@@ -2973,12 +3006,13 @@ static HMM_Vec3 vd__cam_euclidean(float latitude, float longitude)
     return HMM_V3(cosf(lat) * sinf(lng), sinf(lat), cosf(lat) * cosf(lng));
 }
 
-static void vd__cam_update(vd__camera *cam, float fb_width, float fb_height)
+static void vd__cam_update(ecs_entity_t e, float fb_width, float fb_height)
 {
-    assert(cam);
+    assert(e);
     assert((fb_width > 0) && (fb_height > 0));
     const float w = fb_width;
     const float h = fb_height;
+    vd__camera *cam = ecs_get_mut_id(vd__state.ecs.world, e, ecs_id(vd__camera));
     cam->eye_pos = HMM_AddV3(cam->center, HMM_MulV3F(vd__cam_euclidean(cam->latitude, cam->longitude), cam->distance));
 
     HMM_Vec3 d = HMM_SubV3(cam->center, cam->eye_pos);
@@ -2990,9 +3024,11 @@ static void vd__cam_update(vd__camera *cam, float fb_width, float fb_height)
     cam->view_proj = HMM_MulM4(cam->proj, cam->view);
 }
 
-static void vd__cam_handle_event(vd__camera *cam, const sapp_event *ev)
+static void vd__cam_handle_event(ecs_entity_t e, const sapp_event *ev)
 {
-    assert(cam);
+    assert(e);
+
+    vd__camera *cam = ecs_get_mut_id(vd__state.ecs.world, e, ecs_id(vd__camera));
     switch (ev->type)
     {
     case SAPP_EVENTTYPE_MOUSE_DOWN:
@@ -3021,6 +3057,11 @@ static void vd__cam_handle_event(vd__camera *cam, const sapp_event *ev)
     }
 }
 
+static void vd__cam_init()
+{
+    ECS_COMPONENT_DEFINE(vd__state.ecs.world, vd__camera);
+}
+
 static Janet cfun_vd_cam_handle_event(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 2);
@@ -3035,18 +3076,13 @@ static Janet cfun_vd_cam_handle_event(int32_t argc, Janet *argv)
         janet_panic("expected event");
     }
 
-    vd__cam_handle_event(janet_unwrap_abstract(argv[0]), janet_unwrap_abstract(argv[1]));
+    vd__cam_handle_event(janet_unwrap_u64(argv[0]), janet_unwrap_abstract(argv[1]));
     return janet_wrap_nil();
 }
 
 static Janet cfun_vd_cam_update(int32_t argc, Janet *argv)
 {
     janet_arity(argc, 1, 3);
-
-    if (!janet_checktype(argv[0], JANET_ABSTRACT))
-    {
-        janet_panic("expected camera");
-    }
 
     float fb_width, fb_height;
     if (argc == 3 && janet_checktype(argv[1], JANET_NUMBER) && janet_checktype(argv[2], JANET_NUMBER))
@@ -3064,16 +3100,15 @@ static Janet cfun_vd_cam_update(int32_t argc, Janet *argv)
         janet_panic("expected numbers for width and height");
     }
 
-    vd__cam_update(janet_getabstract(argv, 0, &vd__cam_camera), fb_width, fb_height);
+    vd__cam_update(janet_getuinteger64(argv, 0), fb_width, fb_height);
 
     return janet_wrap_nil();
 }
 
-static Janet cfun_vd_cam_new(int32_t argc, Janet *argv)
+static Janet cfun_vd_cam_orbit(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 1);
     JanetTable *desc = janet_gettable(argv, 0);
-    vd__camera *cam = janet_abstract(&vd__cam_camera, sizeof(vd__camera));
     vd__camera_desc cd = (vd__camera_desc){
         .min_dist = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("min-dist"))),
         .max_dist = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("max-dist"))),
@@ -3084,9 +3119,7 @@ static Janet cfun_vd_cam_new(int32_t argc, Janet *argv)
         .nearz = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("nearz"))),
         .farz = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("farz"))),
     };
-    vd__cam_init(cam, &cd);
-    // return janet_wrap_abstract(cam);
-    return janet_wrap_abstract(cam);
+    return janet_wrap_u64(vd__cam_create(&cd));
 }
 
 //    ___  _______  __  _______  ___  ___  ___ _      __
@@ -3141,8 +3174,9 @@ void vd__dbg_draw_cube(HMM_Vec3 pos)
                                                             &transform, &vd__state.v3d.dbg.transform.offset);
 }
 
-void vd__dbg_draw_camera(vd__camera *cam)
+void vd__dbg_draw_camera(ecs_entity_t e)
 {
+    vd__camera *cam = ecs_get_mut_id(vd__state.ecs.world, e, ecs_id(vd__camera));
     vd__state.v3d.dbg.vp = cam->view_proj;
     vd__state.v3d.dbg.v = cam->view;
     vd__state.v3d.dbg.eye_pos = cam->eye_pos;
@@ -3259,12 +3293,7 @@ static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 1);
 
-    if (!janet_checktype(argv[0], JANET_ABSTRACT))
-    {
-        janet_panic("expected camera");
-    }
-
-    vd__dbg_draw_camera(janet_getabstract(argv, 0, &vd__cam_camera));
+    vd__dbg_draw_camera(janet_getuinteger64(argv, 0));
     return janet_wrap_nil();
 }
 
@@ -3324,11 +3353,6 @@ typedef struct
 } vd__skeleton_load_params;
 
 typedef struct vd__mesh_load_params vd__mesh_load_params;
-
-typedef struct
-{
-
-} vd__v3d_doll_load_params;
 
 static vd__asset_load_data vd__v3d_skeleton_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
 {
@@ -3853,7 +3877,7 @@ static void vd__v3d_update()
     }
 }
 
-static void vd__v3d_render(void)
+static void vd__v3d_render(vd__camera *cam)
 {
     HMM_Vec3 light_pos = HMM_V3(50.0f, 50.0f, -50.0f);
     HMM_Mat4 light_view = HMM_LookAt_RH(light_pos, HMM_V3(0.0f, 0.0f, 0.0f), HMM_V3(0.0f, 1.0f, 0.0f));
@@ -3876,7 +3900,7 @@ static void vd__v3d_render(void)
     sg_apply_pipeline(vd__state.v3d.fwd.display.pip);
 
     vd__state.v3d.fwd.display_uniforms.fs.light_dir = HMM_NormV3(light_pos);
-    vd__state.v3d.fwd.display_uniforms.fs.eye_pos = vd__state.v3d.dbg.eye_pos;
+    vd__state.v3d.fwd.display_uniforms.fs.eye_pos = cam->eye_pos;
     sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_vd_v3d_display_fs_uniforms,
                       &SG_RANGE(vd__state.v3d.fwd.display_uniforms.fs));
 
@@ -3888,7 +3912,7 @@ static void vd__v3d_render(void)
         for (int i = 0; i < it.count; i++)
         {
             HMM_Mat4 model = HMM_MulM4(HMM_Scale(mesh[i].scale), HMM_Translate(mesh[i].position));
-            vd__state.v3d.fwd.display_uniforms.vs.mvp = HMM_MulM4(vd__state.v3d.dbg.vp, model);
+            vd__state.v3d.fwd.display_uniforms.vs.mvp = HMM_MulM4(cam->view_proj, model);
             vd__state.v3d.fwd.display_uniforms.vs.model = model;
             vd__state.v3d.fwd.display_uniforms.vs.light_mvp = HMM_MulM4(light_view_proj, model);
             vd__state.v3d.fwd.display_uniforms.vs.diff_color =
@@ -3912,7 +3936,7 @@ static void vd__v3d_render(void)
     sg_apply_pipeline(vd__state.v3d.fwd.display.pip_2);
 
     vd__state.v3d.fwd.doll_uniforms.fs.light_dir = HMM_NormV3(light_pos);
-    vd__state.v3d.fwd.doll_uniforms.fs.eye_pos = vd__state.v3d.dbg.eye_pos;
+    vd__state.v3d.fwd.doll_uniforms.fs.eye_pos = cam->eye_pos;
 
     sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_vd_v3d_doll_fs_uniforms, &SG_RANGE(vd__state.v3d.fwd.doll_uniforms.fs));
 
@@ -3924,7 +3948,7 @@ static void vd__v3d_render(void)
         for (int i = 0; i < dit.count; i++)
         {
             HMM_Mat4 model = HMM_Translate(HMM_V3(0.0f, 0.0f, 0.0f));
-            vd__state.v3d.fwd.doll_uniforms.vs.mvp = HMM_MulM4(vd__state.v3d.dbg.vp, model);
+            vd__state.v3d.fwd.doll_uniforms.vs.mvp = HMM_MulM4(cam->view_proj, model);
             vd__state.v3d.fwd.doll_uniforms.vs.model = model;
             vd__state.v3d.fwd.doll_uniforms.vs.joint_uv =
                 HMM_V2(ozz_joint_texture_u(d[i].doll->ozz), ozz_joint_texture_v(d[i].doll->ozz));
@@ -4007,6 +4031,13 @@ static Janet cfun_vd_v3d_cube(int32_t argc, Janet *argv)
     return janet_wrap_nil();
 }
 
+static Janet cfun_vd_v3d_draw(int32_t argc, Janet *argv)
+{
+    janet_fixarity(argc, 1);
+    vd__v3d_render(ecs_get_mut_id(vd__state.ecs.world, janet_getuinteger64(argv, 0), ecs_id(vd__camera)));
+    return janet_wrap_nil();
+}
+
 //    ___   ___  ___
 //   / _ | / _ \/ _ \
 //  / __ |/ ___/ ___/
@@ -4055,6 +4086,7 @@ void vd__app_init()
     vd__asset_init();
     vd__script_init("game");
     vd__gfx_init();
+    vd__cam_init();
     vd__v3d_init();
     vd__dbg_draw_init();
 
@@ -4069,8 +4101,6 @@ void vd__app_init()
         janet_stacktrace(vd__state.app.main_fiber, ret);
         sapp_quit();
     }
-
-    vd__asset_load("doll", "/assets/dolls/ozz_skin.doll", &(vd__v3d_doll_load_params){}, 0, NULL, 0);
 }
 
 void vd__app_shutdown(void)
@@ -4125,6 +4155,8 @@ void vd__app_update(void)
     //   }
     // });
 
+    vd__core_update();
+
     Janet ret;
     JanetSignal status =
         vd__app_janet_pcall_keep_env(vd__state.app.mod_update_cb, 0, NULL, &ret, &vd__state.app.main_fiber);
@@ -4134,8 +4166,6 @@ void vd__app_update(void)
         janet_stacktrace(vd__state.app.main_fiber, ret);
         sapp_quit();
     }
-
-    vd__core_update();
 }
 
 sapp_desc sokol_main(int argc, char *argv[])
