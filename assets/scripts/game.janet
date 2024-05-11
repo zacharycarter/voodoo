@@ -28,8 +28,8 @@
   (v3d/cube @[0.0 -0.9375 0.0] @[5.0 0.125 5.0])
   (set ((state :player) :doll) (v3d/doll (state :doll-asset)))
   (loop [[action binding] :pairs bindings]
-    (if (not= (get binding 0) input/invalid) (input/bind input/layer/user (get binding 0) action))))
-    # (if (not= (get binding 1) input/invalid) (input/bind input/layer/user (get binding 1) action))))
+    (if (not= (get binding 0) input/invalid) (input/bind input/layer/user (get binding 0) action))
+    (if (not= (get binding 1) input/invalid) (input/bind input/layer/user (get binding 1) action))))
 
 (defn event [e]
   (cam/handle-event (state :camera) e))
