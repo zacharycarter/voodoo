@@ -51,6 +51,9 @@ static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv);
 
+static Janet cfun_vd_input_bind(int32_t argc, Janet *argv);
+static Janet cfun_vd_input_state(int32_t argc, Janet *argv);
+
 static Janet cfun_vd_v3d_cube(int32_t argc, Janet *argv);
 static Janet cfun_vd_v3d_doll(int32_t argc, Janet *argv);
 static Janet cfun_vd_v3d_draw(int32_t argc, Janet *argv);
@@ -68,11 +71,14 @@ static const JanetReg vd__cfuns[] = {
      "(voodoo/dbg/draw/camera)\n\nSet camera matricies for debug draw operations."},
     {"dbg/draw/cube", cfun_vd_dbg_draw_cube, "(voodoo/dbg/draw/cube)\n\nDraw a debug cube."},
     {"dbg/draw/grid", cfun_vd_dbg_draw_grid, "(voodoo/dbg/draw/grid)\n\nDraw a debug grid."},
+    {"input/bind", cfun_vd_input_bind, "(voodoo/input/bind)\n\nBind an action to an input."},
+    {"input/state", cfun_vd_input_state, "(voodoo/input/state)\n\nGet the state of an input."},
     {"v3d/cube", cfun_vd_v3d_cube, "(voodoo/v3d/cube)\n\nCreate a cube."},
     {"v3d/draw", cfun_vd_v3d_draw, "(voodoo/v3d/draw)\n\nDraw a frame."},
     {"v3d/doll", cfun_vd_v3d_doll, "(voodoo/v3d/doll)\n\nCreate a doll."},
     // {"ecs/component", cfun_vd_ecs_component, "(voodoo/ecs/component)\n\nCreate a component."},
     {NULL, NULL, NULL}};
+
 #endif // VOODOO_INCLUDED
 
 //     ______  _______  __    ________  __________   ___________  ______________  _   __
@@ -173,6 +179,13 @@ int vd__app_height();
 #ifndef VD__CONFIG_SHADOW_MAP_SIZE
 #define VD__CONFIG_SHADOW_MAP_SIZE 4096
 #endif
+
+#define VD__INPUT_ACTION_COMMAND 31
+#define VD__INPUT_ACTION_MAX 32
+#define VD__INPUT_DEADZONE 0.1
+#define VD__INPUT_DEADZONE_CAPTURE 0.5
+#define VD__INPUT_ACTION_NONE 255
+#define VD__INPUT_BUTTON_NONE 0
 
 //    __   ____  _______________  _______
 //   / /  / __ \/ ___/ ___/  _/ |/ / ___/
@@ -436,6 +449,176 @@ typedef struct
     int tmp_mem_max;
 } vd__config;
 
+typedef enum
+{
+    VD__BOX = 0,
+    VD__PLANE,
+    VD__SPHERE,
+    VD__CYLINDER,
+    VD__TORUS,
+    VD__NUM_SHAPES
+} vd__dbg_shapes;
+
+typedef struct
+{
+    HMM_Vec3 pos;
+    sshape_element_range_t draw;
+} vd__dbg_shape;
+
+typedef enum
+{
+    VD__INPUT_INVALID = 0,
+    VD__INPUT_KEY_A = 4,
+    VD__INPUT_KEY_B = 5,
+    VD__INPUT_KEY_C = 6,
+    VD__INPUT_KEY_D = 7,
+    VD__INPUT_KEY_E = 8,
+    VD__INPUT_KEY_F = 9,
+    VD__INPUT_KEY_G = 10,
+    VD__INPUT_KEY_H = 11,
+    VD__INPUT_KEY_I = 12,
+    VD__INPUT_KEY_J = 13,
+    VD__INPUT_KEY_K = 14,
+    VD__INPUT_KEY_L = 15,
+    VD__INPUT_KEY_M = 16,
+    VD__INPUT_KEY_N = 17,
+    VD__INPUT_KEY_O = 18,
+    VD__INPUT_KEY_P = 19,
+    VD__INPUT_KEY_Q = 20,
+    VD__INPUT_KEY_R = 21,
+    VD__INPUT_KEY_S = 22,
+    VD__INPUT_KEY_T = 23,
+    VD__INPUT_KEY_U = 24,
+    VD__INPUT_KEY_V = 25,
+    VD__INPUT_KEY_W = 26,
+    VD__INPUT_KEY_X = 27,
+    VD__INPUT_KEY_Y = 28,
+    VD__INPUT_KEY_Z = 29,
+    VD__INPUT_KEY_1 = 30,
+    VD__INPUT_KEY_2 = 31,
+    VD__INPUT_KEY_3 = 32,
+    VD__INPUT_KEY_4 = 33,
+    VD__INPUT_KEY_5 = 34,
+    VD__INPUT_KEY_6 = 35,
+    VD__INPUT_KEY_7 = 36,
+    VD__INPUT_KEY_8 = 37,
+    VD__INPUT_KEY_9 = 38,
+    VD__INPUT_KEY_0 = 39,
+    VD__INPUT_KEY_RETURN = 40,
+    VD__INPUT_KEY_ESCAPE = 41,
+    VD__INPUT_KEY_BACKSPACE = 42,
+    VD__INPUT_KEY_TAB = 43,
+    VD__INPUT_KEY_SPACE = 44,
+    VD__INPUT_KEY_MINUS = 45,
+    VD__INPUT_KEY_EQUALS = 46,
+    VD__INPUT_KEY_LEFTBRACKET = 47,
+    VD__INPUT_KEY_RIGHTBRACKET = 48,
+    VD__INPUT_KEY_BACKSLASH = 49,
+    VD__INPUT_KEY_HASH = 50,
+    VD__INPUT_KEY_SEMICOLON = 51,
+    VD__INPUT_KEY_APOSTROPHE = 52,
+    VD__INPUT_KEY_TILDE = 53,
+    VD__INPUT_KEY_COMMA = 54,
+    VD__INPUT_KEY_PERIOD = 55,
+    VD__INPUT_KEY_SLASH = 56,
+    VD__INPUT_KEY_CAPSLOCK = 57,
+    VD__INPUT_KEY_F1 = 58,
+    VD__INPUT_KEY_F2 = 59,
+    VD__INPUT_KEY_F3 = 60,
+    VD__INPUT_KEY_F4 = 61,
+    VD__INPUT_KEY_F5 = 62,
+    VD__INPUT_KEY_F6 = 63,
+    VD__INPUT_KEY_F7 = 64,
+    VD__INPUT_KEY_F8 = 65,
+    VD__INPUT_KEY_F9 = 66,
+    VD__INPUT_KEY_F10 = 67,
+    VD__INPUT_KEY_F11 = 68,
+    VD__INPUT_KEY_F12 = 69,
+    VD__INPUT_KEY_PRINTSCREEN = 70,
+    VD__INPUT_KEY_SCROLLLOCK = 71,
+    VD__INPUT_KEY_PAUSE = 72,
+    VD__INPUT_KEY_INSERT = 73,
+    VD__INPUT_KEY_HOME = 74,
+    VD__INPUT_KEY_PAGEUP = 75,
+    VD__INPUT_KEY_DELETE = 76,
+    VD__INPUT_KEY_END = 77,
+    VD__INPUT_KEY_PAGEDOWN = 78,
+    VD__INPUT_KEY_RIGHT = 79,
+    VD__INPUT_KEY_LEFT = 80,
+    VD__INPUT_KEY_DOWN = 81,
+    VD__INPUT_KEY_UP = 82,
+    VD__INPUT_KEY_NUMLOCK = 83,
+    VD__INPUT_KEY_KP_DIVIDE = 84,
+    VD__INPUT_KEY_KP_MULTIPLY = 85,
+    VD__INPUT_KEY_KP_MINUS = 86,
+    VD__INPUT_KEY_KP_PLUS = 87,
+    VD__INPUT_KEY_KP_ENTER = 88,
+    VD__INPUT_KEY_KP_1 = 89,
+    VD__INPUT_KEY_KP_2 = 90,
+    VD__INPUT_KEY_KP_3 = 91,
+    VD__INPUT_KEY_KP_4 = 92,
+    VD__INPUT_KEY_KP_5 = 93,
+    VD__INPUT_KEY_KP_6 = 94,
+    VD__INPUT_KEY_KP_7 = 95,
+    VD__INPUT_KEY_KP_8 = 96,
+    VD__INPUT_KEY_KP_9 = 97,
+    VD__INPUT_KEY_KP_0 = 98,
+    VD__INPUT_KEY_KP_PERIOD = 99,
+
+    VD__INPUT_KEY_LCTRL = 100,
+    VD__INPUT_KEY_LSHIFT = 101,
+    VD__INPUT_KEY_LALT = 102,
+    VD__INPUT_KEY_LGUI = 103,
+    VD__INPUT_KEY_RCTRL = 104,
+    VD__INPUT_KEY_RSHIFT = 105,
+    VD__INPUT_KEY_RALT = 106,
+
+    VD__INPUT_KEY_MAX = 107,
+
+    VD__INPUT_GAMEPAD_A = 108,
+    VD__INPUT_GAMEPAD_Y = 109,
+    VD__INPUT_GAMEPAD_B = 110,
+    VD__INPUT_GAMEPAD_X = 111,
+    VD__INPUT_GAMEPAD_L_SHOULDER = 112,
+    VD__INPUT_GAMEPAD_R_SHOULDER = 113,
+    VD__INPUT_GAMEPAD_L_TRIGGER = 114,
+    VD__INPUT_GAMEPAD_R_TRIGGER = 115,
+    VD__INPUT_GAMEPAD_SELECT = 116,
+    VD__INPUT_GAMEPAD_START = 117,
+    VD__INPUT_GAMEPAD_L_STICK_PRESS = 118,
+    VD__INPUT_GAMEPAD_R_STICK_PRESS = 119,
+    VD__INPUT_GAMEPAD_DPAD_UP = 120,
+    VD__INPUT_GAMEPAD_DPAD_DOWN = 121,
+    VD__INPUT_GAMEPAD_DPAD_LEFT = 122,
+    VD__INPUT_GAMEPAD_DPAD_RIGHT = 123,
+    VD__INPUT_GAMEPAD_HOME = 124,
+    VD__INPUT_GAMEPAD_L_STICK_UP = 125,
+    VD__INPUT_GAMEPAD_L_STICK_DOWN = 126,
+    VD__INPUT_GAMEPAD_L_STICK_LEFT = 127,
+    VD__INPUT_GAMEPAD_L_STICK_RIGHT = 128,
+    VD__INPUT_GAMEPAD_R_STICK_UP = 129,
+    VD__INPUT_GAMEPAD_R_STICK_DOWN = 130,
+    VD__INPUT_GAMEPAD_R_STICK_LEFT = 131,
+    VD__INPUT_GAMEPAD_R_STICK_RIGHT = 132,
+
+    VD__INPUT_MOUSE_LEFT = 134,
+    VD__INPUT_MOUSE_MIDDLE = 135,
+    VD__INPUT_MOUSE_RIGHT = 136,
+    VD__INPUT_MOUSE_WHEEL_UP = 137,
+    VD__INPUT_MOUSE_WHEEL_DOWN = 138,
+
+    VD__INPUT_BUTTON_MAX = 139
+} vd__button;
+
+typedef enum
+{
+    VD__INPUT_LAYER_SYSTEM = 0,
+    VD__INPUT_LAYER_USER = 1,
+    VD__INPUT_LAYER_MAX = 2
+} vd__input_layer;
+
+typedef void (*vd__input_capture_callback)(void *user, vd__button button, int32_t ascii_char);
+
 typedef struct vd__tmp_alloc vd__tmp_alloc;
 typedef struct
 {
@@ -505,22 +688,6 @@ typedef struct
     sx_alloc *tracer_back;  // This is the trace-allocator that information is saved from the
                             // previous frame and can be viewed in imgui
 } vd__tmp_alloc_tls;
-
-typedef enum
-{
-    VD__BOX = 0,
-    VD__PLANE,
-    VD__SPHERE,
-    VD__CYLINDER,
-    VD__TORUS,
-    VD__NUM_SHAPES
-} vd__dbg_shapes;
-
-typedef struct
-{
-    HMM_Vec3 pos;
-    sshape_element_range_t draw;
-} vd__dbg_shape;
 
 typedef struct vd__mem_trace_context vd__mem_trace_context;
 
@@ -746,6 +913,19 @@ static struct
     {
         ecs_world_t *world;
     } ecs;
+
+    struct
+    {
+        float actions_state[VD__INPUT_ACTION_MAX];
+        bool actions_pressed[VD__INPUT_ACTION_MAX];
+        bool actions_released[VD__INPUT_ACTION_MAX];
+        uint8_t expected_button[VD__INPUT_ACTION_MAX];
+        uint8_t bindings[VD__INPUT_LAYER_MAX][VD__INPUT_BUTTON_MAX];
+        vd__input_capture_callback capture_callback;
+        void *capture_user;
+        int32_t mouse_x;
+        int32_t mouse_y;
+    } input;
 
     struct
     {
@@ -1828,6 +2008,214 @@ static void vd__core_shutdown(void)
     sx_memset(&vd__state.core, 0x0, sizeof(vd__state.core));
 }
 
+//    _____  _____  __  ________
+//   /  _/ |/ / _ \/ / / /_  __/
+//  _/ //    / ___/ /_/ / / /
+// /___/_/|_/_/   \____/ /_/
+//
+// >>input
+
+static const uint8_t vd__keyboard_map[] = {
+    [SAPP_KEYCODE_SPACE] = VD__INPUT_KEY_SPACE,
+    [SAPP_KEYCODE_APOSTROPHE] = VD__INPUT_KEY_APOSTROPHE,
+    [SAPP_KEYCODE_COMMA] = VD__INPUT_KEY_COMMA,
+    [SAPP_KEYCODE_MINUS] = VD__INPUT_KEY_MINUS,
+    [SAPP_KEYCODE_PERIOD] = VD__INPUT_KEY_PERIOD,
+    [SAPP_KEYCODE_SLASH] = VD__INPUT_KEY_SLASH,
+    [SAPP_KEYCODE_0] = VD__INPUT_KEY_0,
+    [SAPP_KEYCODE_1] = VD__INPUT_KEY_1,
+    [SAPP_KEYCODE_2] = VD__INPUT_KEY_2,
+    [SAPP_KEYCODE_3] = VD__INPUT_KEY_3,
+    [SAPP_KEYCODE_4] = VD__INPUT_KEY_4,
+    [SAPP_KEYCODE_5] = VD__INPUT_KEY_5,
+    [SAPP_KEYCODE_6] = VD__INPUT_KEY_6,
+    [SAPP_KEYCODE_7] = VD__INPUT_KEY_7,
+    [SAPP_KEYCODE_8] = VD__INPUT_KEY_8,
+    [SAPP_KEYCODE_9] = VD__INPUT_KEY_9,
+    [SAPP_KEYCODE_SEMICOLON] = VD__INPUT_KEY_SEMICOLON,
+    [SAPP_KEYCODE_EQUAL] = VD__INPUT_KEY_EQUALS,
+    [SAPP_KEYCODE_A] = VD__INPUT_KEY_A,
+    [SAPP_KEYCODE_B] = VD__INPUT_KEY_B,
+    [SAPP_KEYCODE_C] = VD__INPUT_KEY_C,
+    [SAPP_KEYCODE_D] = VD__INPUT_KEY_D,
+    [SAPP_KEYCODE_E] = VD__INPUT_KEY_E,
+    [SAPP_KEYCODE_F] = VD__INPUT_KEY_F,
+    [SAPP_KEYCODE_G] = VD__INPUT_KEY_G,
+    [SAPP_KEYCODE_H] = VD__INPUT_KEY_H,
+    [SAPP_KEYCODE_I] = VD__INPUT_KEY_I,
+    [SAPP_KEYCODE_J] = VD__INPUT_KEY_J,
+    [SAPP_KEYCODE_K] = VD__INPUT_KEY_K,
+    [SAPP_KEYCODE_L] = VD__INPUT_KEY_L,
+    [SAPP_KEYCODE_M] = VD__INPUT_KEY_M,
+    [SAPP_KEYCODE_N] = VD__INPUT_KEY_N,
+    [SAPP_KEYCODE_O] = VD__INPUT_KEY_O,
+    [SAPP_KEYCODE_P] = VD__INPUT_KEY_P,
+    [SAPP_KEYCODE_Q] = VD__INPUT_KEY_Q,
+    [SAPP_KEYCODE_R] = VD__INPUT_KEY_R,
+    [SAPP_KEYCODE_S] = VD__INPUT_KEY_S,
+    [SAPP_KEYCODE_T] = VD__INPUT_KEY_T,
+    [SAPP_KEYCODE_U] = VD__INPUT_KEY_U,
+    [SAPP_KEYCODE_V] = VD__INPUT_KEY_V,
+    [SAPP_KEYCODE_W] = VD__INPUT_KEY_W,
+    [SAPP_KEYCODE_X] = VD__INPUT_KEY_X,
+    [SAPP_KEYCODE_Y] = VD__INPUT_KEY_Y,
+    [SAPP_KEYCODE_Z] = VD__INPUT_KEY_Z,
+    [SAPP_KEYCODE_LEFT_BRACKET] = VD__INPUT_KEY_LEFTBRACKET,
+    [SAPP_KEYCODE_BACKSLASH] = VD__INPUT_KEY_BACKSLASH,
+    [SAPP_KEYCODE_RIGHT_BRACKET] = VD__INPUT_KEY_RIGHTBRACKET,
+    [SAPP_KEYCODE_GRAVE_ACCENT] = VD__INPUT_KEY_TILDE,
+    [SAPP_KEYCODE_WORLD_1] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_WORLD_2] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_ESCAPE] = VD__INPUT_KEY_ESCAPE,
+    [SAPP_KEYCODE_ENTER] = VD__INPUT_KEY_RETURN,
+    [SAPP_KEYCODE_TAB] = VD__INPUT_KEY_TAB,
+    [SAPP_KEYCODE_BACKSPACE] = VD__INPUT_KEY_BACKSPACE,
+    [SAPP_KEYCODE_INSERT] = VD__INPUT_KEY_INSERT,
+    [SAPP_KEYCODE_DELETE] = VD__INPUT_KEY_DELETE,
+    [SAPP_KEYCODE_RIGHT] = VD__INPUT_KEY_RIGHT,
+    [SAPP_KEYCODE_LEFT] = VD__INPUT_KEY_LEFT,
+    [SAPP_KEYCODE_DOWN] = VD__INPUT_KEY_DOWN,
+    [SAPP_KEYCODE_UP] = VD__INPUT_KEY_UP,
+    [SAPP_KEYCODE_PAGE_UP] = VD__INPUT_KEY_PAGEUP,
+    [SAPP_KEYCODE_PAGE_DOWN] = VD__INPUT_KEY_PAGEDOWN,
+    [SAPP_KEYCODE_HOME] = VD__INPUT_KEY_HOME,
+    [SAPP_KEYCODE_END] = VD__INPUT_KEY_END,
+    [SAPP_KEYCODE_CAPS_LOCK] = VD__INPUT_KEY_CAPSLOCK,
+    [SAPP_KEYCODE_SCROLL_LOCK] = VD__INPUT_KEY_SCROLLLOCK,
+    [SAPP_KEYCODE_NUM_LOCK] = VD__INPUT_KEY_NUMLOCK,
+    [SAPP_KEYCODE_PRINT_SCREEN] = VD__INPUT_KEY_PRINTSCREEN,
+    [SAPP_KEYCODE_PAUSE] = VD__INPUT_KEY_PAUSE,
+    [SAPP_KEYCODE_F1] = VD__INPUT_KEY_F1,
+    [SAPP_KEYCODE_F2] = VD__INPUT_KEY_F2,
+    [SAPP_KEYCODE_F3] = VD__INPUT_KEY_F3,
+    [SAPP_KEYCODE_F4] = VD__INPUT_KEY_F4,
+    [SAPP_KEYCODE_F5] = VD__INPUT_KEY_F5,
+    [SAPP_KEYCODE_F6] = VD__INPUT_KEY_F6,
+    [SAPP_KEYCODE_F7] = VD__INPUT_KEY_F7,
+    [SAPP_KEYCODE_F8] = VD__INPUT_KEY_F8,
+    [SAPP_KEYCODE_F9] = VD__INPUT_KEY_F9,
+    [SAPP_KEYCODE_F10] = VD__INPUT_KEY_F10,
+    [SAPP_KEYCODE_F11] = VD__INPUT_KEY_F11,
+    [SAPP_KEYCODE_F12] = VD__INPUT_KEY_F12,
+    [SAPP_KEYCODE_F13] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F14] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F15] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F16] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F17] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F18] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F19] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F20] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F21] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F22] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F23] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F24] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_F25] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_KP_0] = VD__INPUT_KEY_KP_0,
+    [SAPP_KEYCODE_KP_1] = VD__INPUT_KEY_KP_1,
+    [SAPP_KEYCODE_KP_2] = VD__INPUT_KEY_KP_2,
+    [SAPP_KEYCODE_KP_3] = VD__INPUT_KEY_KP_3,
+    [SAPP_KEYCODE_KP_4] = VD__INPUT_KEY_KP_4,
+    [SAPP_KEYCODE_KP_5] = VD__INPUT_KEY_KP_5,
+    [SAPP_KEYCODE_KP_6] = VD__INPUT_KEY_KP_6,
+    [SAPP_KEYCODE_KP_7] = VD__INPUT_KEY_KP_7,
+    [SAPP_KEYCODE_KP_8] = VD__INPUT_KEY_KP_8,
+    [SAPP_KEYCODE_KP_9] = VD__INPUT_KEY_KP_9,
+    [SAPP_KEYCODE_KP_DECIMAL] = VD__INPUT_KEY_KP_PERIOD,
+    [SAPP_KEYCODE_KP_DIVIDE] = VD__INPUT_KEY_KP_DIVIDE,
+    [SAPP_KEYCODE_KP_MULTIPLY] = VD__INPUT_KEY_KP_MULTIPLY,
+    [SAPP_KEYCODE_KP_SUBTRACT] = VD__INPUT_KEY_KP_MINUS,
+    [SAPP_KEYCODE_KP_ADD] = VD__INPUT_KEY_KP_PLUS,
+    [SAPP_KEYCODE_KP_ENTER] = VD__INPUT_KEY_KP_ENTER,
+    [SAPP_KEYCODE_KP_EQUAL] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_LEFT_SHIFT] = VD__INPUT_KEY_LSHIFT,
+    [SAPP_KEYCODE_LEFT_CONTROL] = VD__INPUT_KEY_LCTRL,
+    [SAPP_KEYCODE_LEFT_ALT] = VD__INPUT_KEY_LALT,
+    [SAPP_KEYCODE_LEFT_SUPER] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_RIGHT_SHIFT] = VD__INPUT_KEY_RSHIFT,
+    [SAPP_KEYCODE_RIGHT_CONTROL] = VD__INPUT_KEY_RCTRL,
+    [SAPP_KEYCODE_RIGHT_ALT] = VD__INPUT_KEY_RALT,
+    [SAPP_KEYCODE_RIGHT_SUPER] = VD__INPUT_INVALID, // not implemented
+    [SAPP_KEYCODE_MENU] = VD__INPUT_INVALID,        // not implemented
+};
+
+static void vd__input_set_layer_button_state(vd__input_layer layer, vd__button button, float state)
+{
+    sx_assertf(layer >= 0 && layer < VD__INPUT_LAYER_MAX, "Invalid input layer %d", layer);
+
+    uint8_t action = vd__state.input.bindings[layer][button];
+    if (action == VD__INPUT_ACTION_NONE)
+    {
+        return;
+    }
+
+    uint8_t expected = vd__state.input.expected_button[action];
+    if (!expected || expected == button)
+    {
+        state = (state > VD__INPUT_DEADZONE) ? state : 0;
+
+        if (state && !vd__state.input.actions_state[action])
+        {
+            vd__state.input.actions_pressed[action] = true;
+            vd__state.input.expected_button[action] = button;
+        }
+        else if (!state && vd__state.input.actions_state[action])
+        {
+            vd__state.input.actions_released[action] = true;
+            vd__state.input.expected_button[action] = VD__INPUT_BUTTON_NONE;
+        }
+        vd__state.input.actions_state[action] = state;
+    }
+}
+
+static void vd__input_set_button_state(vd__button button, float state)
+{
+    sx_assertf(button >= 0 && button < VD__INPUT_BUTTON_MAX, "Invalid input button %d", button);
+
+    vd__input_set_layer_button_state(VD__INPUT_LAYER_SYSTEM, button, state);
+    vd__input_set_layer_button_state(VD__INPUT_LAYER_USER, button, state);
+
+    if (vd__state.input.capture_callback)
+    {
+        if (state > VD__INPUT_DEADZONE_CAPTURE)
+        {
+            vd__state.input.capture_callback(vd__state.input.capture_user, button, 0);
+        }
+    }
+}
+
+static void vd__input_bind(vd__input_layer layer, vd__button button, uint8_t action)
+{
+    sx_assertf(button >= 0 && button < VD__INPUT_BUTTON_MAX, "Invalid input button %d", button);
+    sx_assertf(action >= 0 && action < VD__INPUT_ACTION_MAX, "Invalid input action %d", action);
+    sx_assertf(layer >= 0 && layer < VD__INPUT_LAYER_MAX, "Invalid input layer %d", layer);
+
+    vd__state.input.actions_state[action] = 0;
+    vd__state.input.bindings[layer][button] = action;
+}
+
+static float vd__input_state(uint8_t action)
+{
+    sx_assertf(action >= 0 && action < VD__INPUT_ACTION_MAX, "Invalid input action %d", action);
+    return vd__state.input.actions_state[action];
+}
+
+static Janet cfun_vd_input_bind(int32_t argc, Janet *argv)
+{
+    janet_fixarity(argc, 3);
+    printf("input layer: %d\n", janet_unwrap_integer(argv[0]));
+    printf("button: %d\n", janet_unwrap_integer(argv[1]));
+    printf("action: %d\n", janet_unwrap_integer(argv[2]));
+    vd__input_bind((vd__input_layer)janet_unwrap_integer(argv[0]), (vd__button)janet_unwrap_integer(argv[1]),
+                   (uint8_t)janet_unwrap_integer(argv[2]));
+    return janet_wrap_nil();
+}
+
+static Janet cfun_vd_input_state(int32_t argc, Janet *argv)
+{
+    janet_fixarity(argc, 1);
+    return janet_wrap_number(vd__input_state((uint8_t)janet_getinteger(argv, 0)));
+}
+
 //    _____________
 //   / __/ ___/ __/
 //  / _// /___\ \
@@ -2873,6 +3261,30 @@ EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
 
 static void vd__janet_cdefs(JanetTable *env)
 {
+    janet_def(env, "input/key/up", janet_wrap_integer(VD__INPUT_KEY_UP), "(voodoo/input/key/up)\n\nVD_INPUT_KEY_UP");
+    janet_def(env, "input/key/down", janet_wrap_integer(VD__INPUT_KEY_DOWN),
+              "(voodoo/input/key/down)\n\nVD_INPUT_KEY_DOWN");
+    janet_def(env, "input/key/left", janet_wrap_integer(VD__INPUT_KEY_LEFT),
+              "(voodoo/input/key/left)\n\nVD_INPUT_KEY_LEFT");
+    janet_def(env, "input/key/right", janet_wrap_integer(VD__INPUT_KEY_RIGHT),
+              "(voodoo/input/key/right)\n\nVD_INPUT_KEY_RIGHT");
+
+    janet_def(env, "input/gamepad/dpad/up", janet_wrap_integer(VD__INPUT_GAMEPAD_DPAD_UP),
+              "(voodoo/input/key/up)\n\nVD_INPUT_GAMEPAD_DPAD_UP");
+    janet_def(env, "input/gamepad/dpad/down", janet_wrap_integer(VD__INPUT_GAMEPAD_DPAD_DOWN),
+              "(voodoo/input/gamepad/dpad/down)\n\nVD_INPUT_GAMEPAD_DPAD_DOWN");
+    janet_def(env, "input/gamepad/dpad/left", janet_wrap_integer(VD__INPUT_GAMEPAD_DPAD_LEFT),
+              "(voodoo/input/gamepad/dpad/left)\n\nVD_INPUT_GAMEPAD_DPAD_LEFT");
+    janet_def(env, "input/gamepad/dpad/right", janet_wrap_integer(VD__INPUT_GAMEPAD_DPAD_RIGHT),
+              "(voodoo/input/gamepad/dpad/right)\n\nVD_INPUT_GAMEPAD_DPAD_RIGHT");
+
+    janet_def(env, "input/layer/system", janet_wrap_integer(VD__INPUT_LAYER_SYSTEM),
+              "(voodoo/input/layer/system)\n\nVD_INPUT_LAYER_SYSTEM");
+    janet_def(env, "input/layer/user", janet_wrap_integer(VD__INPUT_LAYER_USER),
+              "(voodoo/input/layer/user)\n\nVD_INPUT_LAYER_USER");
+
+    janet_def(env, "input/invalid", janet_wrap_integer(VD__INPUT_INVALID),
+              "(voodoo/input/invalid)\n\nVD_INPUT_INVALID");
 }
 
 static void vd__script_init(const char *module_name)
@@ -2881,6 +3293,7 @@ static void vd__script_init(const char *module_name)
     JanetTable *core_env = janet_core_env(NULL);
     JanetTable *lookup = janet_env_lookup(core_env);
 
+    vd__janet_cdefs(core_env);
     janet_cfuns(core_env, NULL, vd__cfuns);
 
     char module_path[VD__MAX_PATH];
@@ -4125,6 +4538,16 @@ void vd__app_shutdown(void)
 
 void vd__app_event(const sapp_event *ev)
 {
+    if (ev->type == SAPP_EVENTTYPE_KEY_DOWN || ev->type == SAPP_EVENTTYPE_KEY_UP)
+    {
+        float state = ev->type == SAPP_EVENTTYPE_KEY_DOWN ? 1.0 : 0.0;
+        if (ev->key_code > 0 && ev->key_code < sizeof(vd__keyboard_map))
+        {
+            int code = vd__keyboard_map[ev->key_code];
+            vd__input_set_button_state(code, state);
+        }
+    }
+
     Janet evv = janet_wrap_abstract(ev);
 
     Janet ret;
