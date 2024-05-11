@@ -21,6 +21,17 @@ voodoo is very much WIP.
 ## [Example Usage](https://github.com/zacharycarter/voodoo/blob/master/assets/scripts/game.janet)
 
 ```janet
+(def actions {:up 0
+              :down 1
+              :left 2
+              :right 3
+              :num 4})
+
+(def bindings @{(actions :up) [input/key/up input/gamepad/dpad/up]
+                (actions :down) [input/key/down input/gamepad/dpad/down]
+                (actions :left) [input/key/left input/gamepad/dpad/left]
+                (actions :right) [input/key/right input/gamepad/dpad/right]})
+
 (def state @{:camera nil
              :doll-asset: nil
              :player @{:doll nil}})
@@ -38,12 +49,22 @@ voodoo is very much WIP.
 
   (v3d/cube @[0.0 5.0 0.0] @[1.0 1.0 1.0])
   (v3d/cube @[0.0 -0.9375 0.0] @[5.0 0.125 5.0])
-  (set ((state :player) :doll) (v3d/doll (state :doll-asset))))
+  (set ((state :player) :doll) (v3d/doll (state :doll-asset)))
+  (loop [[action binding] :pairs bindings]
+    (if (not= (get binding 0) input/invalid) (input/bind input/layer/user (get binding 0) action))))
+    # (if (not= (get binding 1) input/invalid) (input/bind input/layer/user (get binding 1) action))))
 
 (defn event [e]
   (cam/handle-event (state :camera) e))
 
+(defn update-doll []
+  (if (> (input/state (actions :up)) 0) (print "up!!!"))
+  (if (> (input/state (actions :down)) 0) (print "down!!!"))
+  (if (> (input/state (actions :left)) 0) (print "left!!!"))
+  (if (> (input/state (actions :right)) 0) (print "right!!!")))
+
 (defn update []
+  (update-doll)
   (cam/update (state :camera))
   (dbg/draw/camera (state :camera))
   (dbg/draw/grid 0)
