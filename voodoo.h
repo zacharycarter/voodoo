@@ -1607,14 +1607,16 @@ void vd__mem_set_view_name(sx_alloc *alloc, const char *name)
 #define VD__MAX_TEMP_ALLOC_WAIT_TIME 5.0
 #define DEFAULT_TMP_SIZE 0xA00000 // 10mb
 
-static void vd__vfs_init();
-static void vd__vfs_update();
-
 static void vd__asset_update();
 
 void vd__dbg_draw();
 static void vd__v3d_render(vd__camera *cam);
 static void vd__v3d_update();
+
+static void vd__input_update(void);
+
+static void vd__vfs_init();
+static void vd__vfs_update();
 
 static _Thread_local vd__tmp_alloc_tls tl_tmp_alloc;
 
@@ -1892,6 +1894,7 @@ static void vd__core_update(void)
     vd__vfs_update();
     vd__asset_update();
     vd__v3d_update();
+    vd__input_update();
 }
 
 static void vd__core_job_thread_init_cb(sx_job_context *ctx, int thread_index, uint32_t thread_id, void *user)
@@ -2199,12 +2202,38 @@ static float vd__input_state(uint8_t action)
     return vd__state.input.actions_state[action];
 }
 
+static void vd__input_unbind(vd__input_layer layer, vd__button button)
+{
+    sx_assertf(layer >= 0 && layer < VD__INPUT_LAYER_MAX, "Invalid input layer %d", layer);
+    sx_assertf(button >= 0 && button < VD__INPUT_BUTTON_MAX, "Invalid input button %d", button);
+
+    vd__state.input.bindings[layer][button] = VD__INPUT_ACTION_NONE;
+}
+
+static void vd__input_unbind_all(vd__input_layer layer)
+{
+    sx_assertf(layer >= 0 && layer < VD__INPUT_LAYER_MAX, "Invalid input layer %d", layer);
+
+    for (uint32_t button = 0; button < VD__INPUT_BUTTON_MAX; button++)
+    {
+        vd__input_unbind(layer, button);
+    }
+}
+static void vd__input_update(void)
+{
+    sx_memset(vd__state.input.actions_pressed, 0, sizeof(vd__state.input.actions_pressed));
+    sx_memset(vd__state.input.actions_released, 0, sizeof(vd__state.input.actions_released));
+}
+
+static void vd__input_init(void)
+{
+    vd__input_unbind_all(VD__INPUT_LAYER_SYSTEM);
+    vd__input_unbind_all(VD__INPUT_LAYER_USER);
+}
+
 static Janet cfun_vd_input_bind(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 3);
-    printf("input layer: %d\n", janet_unwrap_integer(argv[0]));
-    printf("button: %d\n", janet_unwrap_integer(argv[1]));
-    printf("action: %d\n", janet_unwrap_integer(argv[2]));
     vd__input_bind((vd__input_layer)janet_unwrap_integer(argv[0]), (vd__button)janet_unwrap_integer(argv[1]),
                    (uint8_t)janet_unwrap_integer(argv[2]));
     return janet_wrap_nil();
@@ -2213,6 +2242,7 @@ static Janet cfun_vd_input_bind(int32_t argc, Janet *argv)
 static Janet cfun_vd_input_state(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 1);
+    uint8_t input = (uint8_t)janet_getinteger(argv, 0);
     return janet_wrap_number(vd__input_state((uint8_t)janet_getinteger(argv, 0)));
 }
 
@@ -2222,6 +2252,17 @@ static Janet cfun_vd_input_state(int32_t argc, Janet *argv)
 // /___/\___/___/
 //
 // >>ecs
+
+ECS_STRUCT(vd__vec3, {
+    float x;
+    float y;
+    float z;
+});
+
+ECS_STRUCT(vd__transform, {
+    vd__vec3 position;
+    vd__vec3 scale;
+});
 
 static void vd__ecs_init()
 {
@@ -3270,7 +3311,7 @@ static void vd__janet_cdefs(JanetTable *env)
               "(voodoo/input/key/right)\n\nVD_INPUT_KEY_RIGHT");
 
     janet_def(env, "input/gamepad/dpad/up", janet_wrap_integer(VD__INPUT_GAMEPAD_DPAD_UP),
-              "(voodoo/input/key/up)\n\nVD_INPUT_GAMEPAD_DPAD_UP");
+              "(voodoo/gamepad/dpad/up)\n\nVD_INPUT_GAMEPAD_DPAD_UP");
     janet_def(env, "input/gamepad/dpad/down", janet_wrap_integer(VD__INPUT_GAMEPAD_DPAD_DOWN),
               "(voodoo/input/gamepad/dpad/down)\n\nVD_INPUT_GAMEPAD_DPAD_DOWN");
     janet_def(env, "input/gamepad/dpad/left", janet_wrap_integer(VD__INPUT_GAMEPAD_DPAD_LEFT),
@@ -3738,14 +3779,15 @@ static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv)
 //
 // >>v3d
 
-typedef struct
-{
+ECS_STRUCT(vd__doll, {
     float time_factor;
     double time_sec;
+    vd__transform transform;
+    ECS_PRIVATE
     sg_buffer vertex_buffer;
     sg_buffer index_buffer;
     vd__v3d_doll *doll;
-} vd__doll;
+});
 
 typedef struct
 {
@@ -4092,7 +4134,8 @@ static void vd__v3d_shadow_pass_run(vd__v3d_offscreen_pass *shadow, HMM_Mat4 lig
 
         for (int i = 0; i < dit.count; i++)
         {
-            HMM_Mat4 model = HMM_Translate(HMM_V3(0.0f, 0.0f, 0.0f));
+            HMM_Mat4 model =
+                HMM_Translate(HMM_V3(d[i].transform.position.x, d[i].transform.position.y, d[i].transform.position.z));
             vd__state.v3d.fwd.shadow_doll_uniforms.mvp = HMM_MulM4(light_view_proj, model);
             vd__state.v3d.fwd.shadow_doll_uniforms.joint_uv =
                 HMM_V2(ozz_joint_texture_u(d[i].doll->ozz), ozz_joint_texture_v(d[i].doll->ozz));
@@ -4447,7 +4490,12 @@ static Janet cfun_vd_v3d_doll(int32_t argc, Janet *argv)
     vd__v3d_doll *doll = (vd__v3d_doll *)vd__asset_obj_get(*hnd).ptr;
     ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
     ecs_set(vd__state.ecs.world, e, vd__doll,
-            {0.0f, 0.0, ozz_vertex_buffer(doll->ozz), ozz_index_buffer(doll->ozz), doll});
+            {0.0f,
+             0.0,
+             {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}},
+             ozz_vertex_buffer(doll->ozz),
+             ozz_index_buffer(doll->ozz),
+             doll});
     return janet_wrap_u64(e);
 }
 
@@ -4509,6 +4557,7 @@ void vd__app_init()
     vd__cam_init();
     vd__v3d_init();
     vd__dbg_draw_init();
+    vd__input_init();
 
     vd__vfs_mount("/assets", "/assets", false);
 
