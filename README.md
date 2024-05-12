@@ -58,10 +58,10 @@ voodoo is very much WIP.
   (cam/handle-event (state :camera) e))
 
 (defn update-doll []
-  (if (> (input/state (actions :up)) 0) (print "up!!!"))
-  (if (> (input/state (actions :down)) 0) (print "down!!!"))
-  (if (> (input/state (actions :left)) 0) (print "left!!!"))
-  (if (> (input/state (actions :right)) 0) (print "right!!!")))
+  (if (> (input/state (actions :up)) 0) (print "up!!!")
+      (if (> (input/state (actions :down)) 0) (print "down!!!")))
+  (if (> (input/state (actions :left)) 0) (print "left!!!")
+      (if (> (input/state (actions :right)) 0) (print "right!!!"))))
 
 (defn update []
   (update-doll)
