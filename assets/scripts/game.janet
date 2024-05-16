@@ -11,7 +11,7 @@
 
 (def state @{:camera nil
              :doll-asset: nil
-             :player @{:doll nil}})
+             :player: nil})
 
 (defn init []
   (set (state :doll-asset) (asset/load "doll" "/assets/dolls/ozz_skin.doll"))
@@ -26,7 +26,8 @@
 
   (v3d/cube @[0.0 5.0 0.0] @[1.0 1.0 1.0])
   (v3d/cube @[0.0 -0.9375 0.0] @[5.0 0.125 5.0])
-  (set ((state :player) :doll) (v3d/doll (state :doll-asset)))
+  (set (state :player) (game/object @[0.0 0.0 0.0] @[1.0 1.0 1.0] @[0.0 0.0 0.0 0.0]))
+  (game/object/add-component (state :player) component/doll (v3d/doll/create (state :doll-asset)))
   (loop [[action binding] :pairs bindings]
     (if (not= (get binding 0) input/invalid) (input/bind input/layer/user (get binding 0) action))
     (if (not= (get binding 1) input/invalid) (input/bind input/layer/user (get binding 1) action))))
