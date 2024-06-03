@@ -10,18 +10,22 @@
     "@codemirror/language": "^6.10.0",
     "@codemirror/state": "^6.4.0",
     "@codemirror/view": "^6.23.0",
-    "@rollup/plugin-node-resolve": "^15.2.3",
     "big.js": "^6.2.1",
     "codemirror": "^6.0.1",
     "codemirror-lang-janet": "^0.7.2",
+    "rollup-plugin-postcss": "^4.0.2",
+    "rollup-plugin-postcss-modules": "^2.1.1",
+    "rollup-plugin-tla": "^0.0.2",
+    "solid-js": "^1.8.17",
     "thememirror": "^2.0.1"
   },
   "devDependencies": {
+    "@rollup/plugin-commonjs": "^25.0.8",
+    "@rollup/plugin-node-resolve": "^15.2.3",
     "autoprefixer": "^10.4.16",
     "jquery": "^3.7.1",
     "postcss": "^8.4.33",
     "postcss-modules": "^6.0.0",
-    "rollup-plugin-postcss": "^4.0.2",
-    "tailwindcss": "^3.4.1"
+    "tailwindcss": "^3.4.3"
   }
 }
