@@ -52,7 +52,7 @@ static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv);
 
 static Janet cfun_vd_game_object(int32_t argc, Janet *argv);
-static Janet cfun_vd_game_object_add_component(int32_t argc, Janet *argv);
+static Janet cfun_vd_game_object_set(int32_t argc, Janet *argv);
 
 static Janet cfun_vd_input_bind(int32_t argc, Janet *argv);
 static Janet cfun_vd_input_state(int32_t argc, Janet *argv);
@@ -75,8 +75,8 @@ static const JanetReg vd__cfuns[] = {
     {"dbg/draw/cube", cfun_vd_dbg_draw_cube, "(voodoo/dbg/draw/cube)\n\nDraw a debug cube."},
     {"dbg/draw/grid", cfun_vd_dbg_draw_grid, "(voodoo/dbg/draw/grid)\n\nDraw a debug grid."},
     {"game/object", cfun_vd_game_object, "(voodoo/game/object)\n\nCreate a new game object."},
-    {"game/object/add-component", cfun_vd_game_object_add_component,
-     "(voodoo/game/object/add-component)\n\nAdd a component to an existing game object."},
+    {"game/object/set", cfun_vd_game_object_set,
+     "(voodoo/game/object/set)\n\nSets the value of a component for an existing game object."},
     {"input/bind", cfun_vd_input_bind, "(voodoo/input/bind)\n\nBind an action to an input."},
     {"input/state", cfun_vd_input_state, "(voodoo/input/state)\n\nGet the state of an input."},
     {"v3d/cube", cfun_vd_v3d_cube, "(voodoo/v3d/cube)\n\nCreate a cube."},
@@ -1026,6 +1026,25 @@ static struct
 //
 // >>math
 
+ECS_STRUCT(vd__position, {
+    float x;
+    float y;
+    float z;
+});
+
+ECS_STRUCT(vd__scale, {
+    float x;
+    float y;
+    float z;
+});
+
+ECS_STRUCT(vd__rotation, {
+    float x;
+    float y;
+    float z;
+    float w;
+});
+
 ECS_STRUCT(vd__vec3, {
     float x;
     float y;
@@ -1037,6 +1056,12 @@ ECS_STRUCT(vd__quat, {
     float y;
     float z;
     float w;
+});
+
+ECS_STRUCT(vd__transform, {
+    vd__position position;
+    vd__scale scale;
+    vd__rotation rotation;
 });
 
 static const float vd__pi = HMM_PI32;
@@ -1143,6 +1168,83 @@ static vd__vec3 vd__unwrap_vd_vec3(const Janet val)
     float z = vd__idx_getfloat(view, 2);
     return (vd__vec3){x, y, z};
 }
+
+static vd__position vd__unwrap_vd_position(const Janet val)
+{
+    JanetView view;
+    if (!janet_indexed_view(val, &view.items, &view.len))
+    {
+        janet_panic("expected vec to be an indexed type");
+    }
+
+    if (view.len != 3)
+    {
+        janet_panic("vec must have exactly 3 elements");
+    }
+
+    float x = vd__idx_getfloat(view, 0);
+    float y = vd__idx_getfloat(view, 1);
+    float z = vd__idx_getfloat(view, 2);
+    return (vd__position){x, y, z};
+}
+
+static vd__scale vd__unwrap_vd_scale(const Janet val)
+{
+    JanetView view;
+    if (!janet_indexed_view(val, &view.items, &view.len))
+    {
+        janet_panic("expected vec to be an indexed type");
+    }
+
+    if (view.len != 3)
+    {
+        janet_panic("vec must have exactly 3 elements");
+    }
+
+    float x = vd__idx_getfloat(view, 0);
+    float y = vd__idx_getfloat(view, 1);
+    float z = vd__idx_getfloat(view, 2);
+    return (vd__scale){x, y, z};
+}
+
+static vd__rotation vd__unwrap_vd_rotation(const Janet val)
+{
+    JanetView view;
+    if (!janet_indexed_view(val, &view.items, &view.len))
+    {
+        janet_panic("expected vec to be an indexed type");
+    }
+
+    if (view.len != 4)
+    {
+        janet_panic("quat must have exactly 3 elements");
+    }
+
+    float x = vd__idx_getfloat(view, 0);
+    float y = vd__idx_getfloat(view, 1);
+    float z = vd__idx_getfloat(view, 2);
+    float w = vd__idx_getfloat(view, 3);
+    return (vd__rotation){x, y, z, w};
+}
+
+/*static vd__transform vd__unwrap_vd__transform(const Janet val)
+{
+    JanetView view;
+    if (!janet_indexed_view(val, &view.items, &view.len))
+    {
+        janet_panic("expected transform to be an indexed type");
+    }
+
+    if (view.len != 3)
+    {
+        janet_panic("transform must have exactly 3 elements");
+    }
+
+    vd__position pos = vd__unwrap_vd_position(view, 0);
+    vd__scale scale = vd__unwrap_vd_scale(view, 1);
+    vd__rotation rot = vd__unwrap_vd_rotation(view, 2);
+    return (vd__transform){pos, scale, rot};
+}*/
 
 //    __  _________  _______  _____  __
 //   /  |/  / __/  |/  / __ \/ _ \ \/ /
@@ -2332,12 +2434,6 @@ static Janet cfun_vd_input_state(int32_t argc, Janet *argv)
 //
 // >>ecs
 
-ECS_STRUCT(vd__transform, {
-    vd__vec3 position;
-    vd__vec3 scale;
-    vd__quat rotation;
-});
-
 ECS_STRUCT(vd__doll, {
     float time_factor;
     double time_sec;
@@ -2348,6 +2444,52 @@ ECS_STRUCT(vd__doll, {
     vd__v3d_doll *doll;
 });
 
+static ecs_meta_cursor_t *vd__ecs_janet_cursor(ecs_entity_t type, void *base)
+{
+    ecs_meta_cursor_t *cursor = janet_smalloc(sizeof(ecs_meta_cursor_t));
+    *cursor = ecs_meta_cursor(vd__state.ecs.world, type, base);
+    return cursor;
+}
+
+static void vd__ecs_deserialize_type(Janet *argv, int idx, ecs_meta_cursor_t *c, int depth)
+{
+    int ktype, vtype, ret, mtype, prev_ikey;
+    bool in_array = false, designated_initializer = false;
+
+    ret = ecs_meta_push(c);
+    ecs_assert(!ret, ECS_INTERNAL_ERROR, NULL);
+    in_array = ecs_meta_is_collection(c);
+
+    const JanetKV *kv = NULL;
+    const JanetDictView dict = janet_getdictionary(argv, idx);
+    while ((kv = janet_dictionary_next(dict.kvs, dict.cap, kv)))
+    {
+        const char *key;
+        if (janet_type(kv->key) == JANET_KEYWORD)
+        {
+            key = (const char *)janet_unwrap_keyword(kv->key);
+            printf("meta_member field: %s\n", key);
+            ret = ecs_meta_member(c, key);
+        }
+
+        if (janet_type(kv->value) == JANET_NUMBER)
+        {
+            double val = janet_unwrap_number(kv->value);
+            printf("meta_member field: %s and value: %lf\n", key, val);
+            ret = ecs_meta_set_float(c, val);
+        }
+    }
+    ret = ecs_meta_pop(c);
+
+    ecs_assert(!ret, ECS_INTERNAL_ERROR, NULL);
+}
+
+static void vd__ecs_janet_to_ptr(Janet *argv, int idx, ecs_entity_t type, void *ptr)
+{
+    ecs_meta_cursor_t *c = vd__ecs_janet_cursor(type, ptr);
+    vd__ecs_deserialize_type(argv, idx, c, 0);
+}
+
 static void vd__ecs_init()
 {
     ecs_world_t *world = ecs_init();
@@ -2355,6 +2497,9 @@ static void vd__ecs_init()
 
     ECS_META_COMPONENT(vd__state.ecs.world, vd__vec3);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__quat);
+    ECS_META_COMPONENT(vd__state.ecs.world, vd__position);
+    ECS_META_COMPONENT(vd__state.ecs.world, vd__scale);
+    ECS_META_COMPONENT(vd__state.ecs.world, vd__rotation);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__transform);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__doll);
 }
@@ -3395,6 +3540,8 @@ EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
 static void vd__janet_cdefs(JanetTable *env)
 {
     janet_def(env, "component/doll", janet_wrap_u64(ecs_id(vd__doll)), "(voodoo/component/doll)\nDoll component");
+    janet_def(env, "component/transform", janet_wrap_u64(ecs_id(vd__transform)),
+              "(voodoo/component/transform)\nTransform component");
 
     janet_def(env, "input/key/up", janet_wrap_integer(VD__INPUT_KEY_UP), "(voodoo/input/key/up)\n\nVD_INPUT_KEY_UP");
     janet_def(env, "input/key/down", janet_wrap_integer(VD__INPUT_KEY_DOWN),
@@ -3877,22 +4024,54 @@ static Janet cfun_vd_game_object(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 3);
 
+    vd__position position = vd__unwrap_vd_position(argv[0]);
+    vd__scale scale = vd__unwrap_vd_scale(argv[1]);
+    vd__rotation rotation = vd__unwrap_vd_rotation(argv[2]);
+
     ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
-    ecs_set(vd__state.ecs.world, e, vd__transform,
-            {vd__unwrap_vd_vec3(argv[0]), vd__unwrap_vd_vec3(argv[1]), vd__unwrap_vd_quat(argv[2])});
+    ecs_set(vd__state.ecs.world, e, vd__position, {position.x, position.y, position.z});
+    ecs_set(vd__state.ecs.world, e, vd__scale, {scale.x, scale.y, scale.z});
+    ecs_set(vd__state.ecs.world, e, vd__rotation, {rotation.x, rotation.y, rotation.z, rotation.w});
+    ecs_set(vd__state.ecs.world, e, vd__transform, {position, scale, rotation});
 
     return janet_wrap_u64(e);
 }
 
-static Janet cfun_vd_game_object_add_component(int32_t argc, Janet *argv)
+static Janet cfun_vd_game_object_set(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 3);
     ecs_entity_t game_object_entity = janet_unwrap_u64(argv[0]);
     ecs_id_t component_id = janet_unwrap_u64(argv[1]);
     const ecs_type_info_t *component_type_info = ecs_get_type_info(vd__state.ecs.world, component_id);
-    ecs_set_id(vd__state.ecs.world, game_object_entity, component_id, component_type_info->size,
-               (void *)janet_unwrap_abstract(argv[2]));
-    return janet_wrap_nil();
+
+    printf("second argument is pointer: %s\n", janet_checktype(argv[2], JANET_POINTER) ? "true" : "false");
+    printf("second argument is abstract: %s\n", janet_checktype(argv[2], JANET_ABSTRACT) ? "true" : "false");
+
+    if (janet_checktype(argv[2], JANET_ABSTRACT))
+    {
+        ecs_set_id(vd__state.ecs.world, game_object_entity, component_id, component_type_info->size,
+                   (void *)janet_unwrap_abstract(argv[2]));
+        return janet_wrap_nil();
+    }
+    else
+    {
+        void *ptr = ecs_get_mut_id(vd__state.ecs.world, game_object_entity, component_id);
+        vd__ecs_janet_to_ptr(argv, 2, component_id, ptr);
+        ecs_modified_id(vd__state.ecs.world, game_object_entity, component_id);
+
+        return janet_wrap_nil();
+    }
+    /*janet_fixarity(argc, 3);
+
+    ecs_entity_t e = janet_getuinteger64(argv, 0);
+    const ecs_entity_t component = janet_getuinteger64(argv, 1);
+    if (!e)
+    {
+        e = ecs_new_id(vd__state.ecs.world);
+        ecs_entity_t scope = ecs_get_scope(vd__state.ecs.world);
+        if (scope)
+            ecs_add_pair(vd__state.ecs.world, e, EcsChildOf, scope);
+    }*/
 }
 
 //   _   ______ ___
@@ -3911,7 +4090,6 @@ typedef struct
     uint32_t num_indices;
 } vd__static_mesh;
 
-ECS_COMPONENT_DECLARE(vd__doll);
 ECS_COMPONENT_DECLARE(vd__static_mesh);
 
 typedef struct vd__animation_load_params vd__animation_load_params;
@@ -4250,8 +4428,7 @@ static void vd__v3d_shadow_pass_run(vd__v3d_offscreen_pass *shadow, HMM_Mat4 lig
 
         for (int i = 0; i < dit.count; i++)
         {
-            HMM_Mat4 model =
-                HMM_Translate(HMM_V3(d[i].transform.position.x, d[i].transform.position.y, d[i].transform.position.z));
+            HMM_Mat4 model = HMM_Translate(HMM_V3(t[i].position.x, t[i].position.y, t[i].position.z));
             vd__state.v3d.fwd.shadow_doll_uniforms.mvp = HMM_MulM4(light_view_proj, model);
             vd__state.v3d.fwd.shadow_doll_uniforms.joint_uv =
                 HMM_V2(ozz_joint_texture_u(d[i].doll->ozz), ozz_joint_texture_v(d[i].doll->ozz));

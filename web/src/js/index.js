@@ -12,6 +12,8 @@ import Voodoo from "../../voodoo.js";
 
 import "../css/main.css";
 
+if (typeof window === 'object')
+{
 function isNumberNode(node) {
   return node.type.name === "Number";
 }
@@ -265,3 +267,4 @@ Voodoo(Module).then((VD) => {
   //   });
   // }
 });
+}
