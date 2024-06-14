@@ -52,6 +52,7 @@ static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv);
 static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv);
 
 static Janet cfun_vd_game_object(int32_t argc, Janet *argv);
+static Janet cfun_vd_game_object_get(int32_t argc, Janet *argv);
 static Janet cfun_vd_game_object_set(int32_t argc, Janet *argv);
 
 static Janet cfun_vd_input_bind(int32_t argc, Janet *argv);
@@ -75,6 +76,8 @@ static const JanetReg vd__cfuns[] = {
     {"dbg/draw/cube", cfun_vd_dbg_draw_cube, "(voodoo/dbg/draw/cube)\n\nDraw a debug cube."},
     {"dbg/draw/grid", cfun_vd_dbg_draw_grid, "(voodoo/dbg/draw/grid)\n\nDraw a debug grid."},
     {"game/object", cfun_vd_game_object, "(voodoo/game/object)\n\nCreate a new game object."},
+    {"game/object/get", cfun_vd_game_object_get,
+     "(voodoo/game/object/get)\n\nGets the value of a component for an existing game object."},
     {"game/object/set", cfun_vd_game_object_set,
      "(voodoo/game/object/set)\n\nSets the value of a component for an existing game object."},
     {"input/bind", cfun_vd_input_bind, "(voodoo/input/bind)\n\nBind an action to an input."},
@@ -1026,30 +1029,37 @@ static struct
 //
 // >>math
 
-ECS_STRUCT(vd__position, {
-    float x;
-    float y;
-    float z;
-});
-
-ECS_STRUCT(vd__scale, {
-    float x;
-    float y;
-    float z;
-});
-
-ECS_STRUCT(vd__rotation, {
-    float x;
-    float y;
-    float z;
-    float w;
-});
-
 ECS_STRUCT(vd__vec3, {
     float x;
     float y;
     float z;
 });
+
+static int vd__vec3_get(void *ptr, Janet key, Janet *out)
+{
+    vd__vec3 *v = ptr;
+    if (janet_keyeq(key, "x"))
+    {
+        *out = janet_wrap_number(v->x);
+        return 1;
+    }
+
+    if (janet_keyeq(key, "y"))
+    {
+        *out = janet_wrap_number(v->y);
+        return 1;
+    }
+
+    if (janet_keyeq(key, "z"))
+    {
+        *out = janet_wrap_number(v->z);
+        return 1;
+    }
+    return 0;
+}
+
+static const JanetAbstractType vd__vec3_at = {
+    "voodoo/component/vec3", NULL, NULL, vd__vec3_get, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 
 ECS_STRUCT(vd__quat, {
     float x;
@@ -1059,10 +1069,34 @@ ECS_STRUCT(vd__quat, {
 });
 
 ECS_STRUCT(vd__transform, {
-    vd__position position;
-    vd__scale scale;
-    vd__rotation rotation;
+    vd__vec3 position;
+    vd__vec3 scale;
+    vd__quat rotation;
 });
+
+static int vd__transform_get(void *ptr, Janet key, Janet *out)
+{
+    vd__transform *t = ptr;
+    if (janet_keyeq(key, "position"))
+    {
+        vd__vec3 *p = janet_abstract(&vd__vec3_at, sizeof(vd__vec3));
+        *p = t->position;
+        *out = janet_wrap_abstract(p);
+        return 1;
+    }
+
+    if (janet_keyeq(key, "scale"))
+    {
+        vd__vec3 *s = janet_abstract(&vd__vec3_at, sizeof(vd__vec3));
+        *s = t->scale;
+        *out = janet_wrap_abstract(s);
+        return 1;
+    }
+    return 0;
+}
+
+static const JanetAbstractType vd__transform_at = {
+    "voodoo/component/transform", NULL, NULL, vd__transform_get, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 
 static const float vd__pi = HMM_PI32;
 static const float vd__2pi = HMM_PI32 * 2.0f;
@@ -1111,7 +1145,7 @@ static HMM_Quat vd__unwrap_quat(const Janet val)
     return HMM_Q(x, y, z, w);
 }
 
-static vd__quat vd__unwrap_vd_quat(const Janet val)
+static vd__quat vd__unwrap_vd__quat(const Janet val)
 {
     JanetView view;
     if (!janet_indexed_view(val, &view.items, &view.len))
@@ -1131,7 +1165,7 @@ static vd__quat vd__unwrap_vd_quat(const Janet val)
     return (vd__quat){x, y, z, w};
 }
 
-static HMM_Vec3 vd__unwrap_vec3(const Janet val)
+static HMM_Vec3 vd__unwrap_hmm_v3(const Janet val)
 {
     JanetView view;
     if (!janet_indexed_view(val, &view.items, &view.len))
@@ -1150,7 +1184,7 @@ static HMM_Vec3 vd__unwrap_vec3(const Janet val)
     return HMM_V3(x, y, z);
 }
 
-static vd__vec3 vd__unwrap_vd_vec3(const Janet val)
+static vd__vec3 vd__unwrap_vd__vec3(const Janet val)
 {
     JanetView view;
     if (!janet_indexed_view(val, &view.items, &view.len))
@@ -1167,64 +1201,6 @@ static vd__vec3 vd__unwrap_vd_vec3(const Janet val)
     float y = vd__idx_getfloat(view, 1);
     float z = vd__idx_getfloat(view, 2);
     return (vd__vec3){x, y, z};
-}
-
-static vd__position vd__unwrap_vd_position(const Janet val)
-{
-    JanetView view;
-    if (!janet_indexed_view(val, &view.items, &view.len))
-    {
-        janet_panic("expected vec to be an indexed type");
-    }
-
-    if (view.len != 3)
-    {
-        janet_panic("vec must have exactly 3 elements");
-    }
-
-    float x = vd__idx_getfloat(view, 0);
-    float y = vd__idx_getfloat(view, 1);
-    float z = vd__idx_getfloat(view, 2);
-    return (vd__position){x, y, z};
-}
-
-static vd__scale vd__unwrap_vd_scale(const Janet val)
-{
-    JanetView view;
-    if (!janet_indexed_view(val, &view.items, &view.len))
-    {
-        janet_panic("expected vec to be an indexed type");
-    }
-
-    if (view.len != 3)
-    {
-        janet_panic("vec must have exactly 3 elements");
-    }
-
-    float x = vd__idx_getfloat(view, 0);
-    float y = vd__idx_getfloat(view, 1);
-    float z = vd__idx_getfloat(view, 2);
-    return (vd__scale){x, y, z};
-}
-
-static vd__rotation vd__unwrap_vd_rotation(const Janet val)
-{
-    JanetView view;
-    if (!janet_indexed_view(val, &view.items, &view.len))
-    {
-        janet_panic("expected vec to be an indexed type");
-    }
-
-    if (view.len != 4)
-    {
-        janet_panic("quat must have exactly 3 elements");
-    }
-
-    float x = vd__idx_getfloat(view, 0);
-    float y = vd__idx_getfloat(view, 1);
-    float z = vd__idx_getfloat(view, 2);
-    float w = vd__idx_getfloat(view, 3);
-    return (vd__rotation){x, y, z, w};
 }
 
 /*static vd__transform vd__unwrap_vd__transform(const Janet val)
@@ -2456,9 +2432,13 @@ static void vd__ecs_deserialize_type(Janet *argv, int idx, ecs_meta_cursor_t *c,
     int ktype, vtype, ret, mtype, prev_ikey;
     bool in_array = false, designated_initializer = false;
 
-    ret = ecs_meta_push(c);
-    ecs_assert(!ret, ECS_INTERNAL_ERROR, NULL);
-    in_array = ecs_meta_is_collection(c);
+    if (janet_checktype(argv[idx], JANET_TABLE))
+    {
+        ret = ecs_meta_push(c);
+        ecs_assert(!ret, ECS_INTERNAL_ERROR, NULL);
+
+        in_array = ecs_meta_is_collection(c);
+    }
 
     const JanetKV *kv = NULL;
     const JanetDictView dict = janet_getdictionary(argv, idx);
@@ -2477,6 +2457,10 @@ static void vd__ecs_deserialize_type(Janet *argv, int idx, ecs_meta_cursor_t *c,
             double val = janet_unwrap_number(kv->value);
             printf("meta_member field: %s and value: %lf\n", key, val);
             ret = ecs_meta_set_float(c, val);
+        }
+        else if (janet_type(kv->value) == JANET_TABLE)
+        {
+            vd__ecs_deserialize_type((Janet *)&kv->value, 0, c, depth);
         }
     }
     ret = ecs_meta_pop(c);
@@ -2497,9 +2481,6 @@ static void vd__ecs_init()
 
     ECS_META_COMPONENT(vd__state.ecs.world, vd__vec3);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__quat);
-    ECS_META_COMPONENT(vd__state.ecs.world, vd__position);
-    ECS_META_COMPONENT(vd__state.ecs.world, vd__scale);
-    ECS_META_COMPONENT(vd__state.ecs.world, vd__rotation);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__transform);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__doll);
 }
@@ -3807,7 +3788,7 @@ static Janet cfun_vd_cam_orbit(int32_t argc, Janet *argv)
     vd__camera_desc cd = (vd__camera_desc){
         .min_dist = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("min-dist"))),
         .max_dist = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("max-dist"))),
-        .center = vd__unwrap_vec3(janet_table_get(desc, janet_ckeywordv("center"))),
+        .center = vd__unwrap_hmm_v3(janet_table_get(desc, janet_ckeywordv("center"))),
         .distance = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("distance"))),
         .latitude = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("latitude"))),
         .longitude = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("longitude"))),
@@ -3995,7 +3976,7 @@ static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv)
 static Janet cfun_vd_dbg_draw_cube(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 1);
-    vd__dbg_draw_cube(vd__unwrap_vec3(argv[0]));
+    vd__dbg_draw_cube(vd__unwrap_hmm_v3(argv[0]));
     return janet_wrap_nil();
 }
 
@@ -4024,17 +4005,30 @@ static Janet cfun_vd_game_object(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 3);
 
-    vd__position position = vd__unwrap_vd_position(argv[0]);
-    vd__scale scale = vd__unwrap_vd_scale(argv[1]);
-    vd__rotation rotation = vd__unwrap_vd_rotation(argv[2]);
+    vd__vec3 position = vd__unwrap_vd__vec3(argv[0]);
+    vd__vec3 scale = vd__unwrap_vd__vec3(argv[1]);
+    vd__quat rotation = vd__unwrap_vd__quat(argv[2]);
 
     ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
-    ecs_set(vd__state.ecs.world, e, vd__position, {position.x, position.y, position.z});
-    ecs_set(vd__state.ecs.world, e, vd__scale, {scale.x, scale.y, scale.z});
-    ecs_set(vd__state.ecs.world, e, vd__rotation, {rotation.x, rotation.y, rotation.z, rotation.w});
     ecs_set(vd__state.ecs.world, e, vd__transform, {position, scale, rotation});
 
     return janet_wrap_u64(e);
+}
+
+static Janet cfun_vd_game_object_get(int32_t argc, Janet *argv)
+{
+    janet_fixarity(argc, 2);
+    ecs_entity_t game_object_entity = janet_unwrap_u64(argv[0]);
+    ecs_id_t component_id = janet_unwrap_u64(argv[1]);
+    const ecs_type_info_t *component_type_info = ecs_get_type_info(vd__state.ecs.world, component_id);
+    if (component_type_info->component == ecs_id(vd__transform))
+    {
+        const vd__transform *transform = ecs_get_id(vd__state.ecs.world, game_object_entity, component_id);
+        vd__transform *res = janet_abstract(&vd__transform_at, component_type_info->size);
+        *res = *transform;
+        return janet_wrap_abstract(res);
+    }
+    return janet_wrap_nil();
 }
 
 static Janet cfun_vd_game_object_set(int32_t argc, Janet *argv)
@@ -4772,7 +4766,7 @@ static void vd__v3d_init()
 static Janet cfun_vd_v3d_cube(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 2);
-    vd__v3d_cube(vd__unwrap_vec3(argv[0]), vd__unwrap_vec3(argv[1]));
+    vd__v3d_cube(vd__unwrap_hmm_v3(argv[0]), vd__unwrap_hmm_v3(argv[1]));
     return janet_wrap_nil();
 }
 

@@ -29,19 +29,32 @@
   (set (state :player) (game/object @[0.0 0.0 0.0] @[1.0 1.0 1.0] @[0.0 0.0 0.0 0.0]))
   (game/object/set (state :player) component/doll (v3d/doll/create (state :doll-asset)))
   (loop [[action binding] :pairs bindings]
-    (if (not= (get binding 0) input/invalid) (input/bind input/layer/user (get binding 0) action))
-    (if (not= (get binding 1) input/invalid) (input/bind input/layer/user (get binding 1) action))))
+    (if (not= (get binding 0) input/invalid)
+      (input/bind input/layer/user (get binding 0) action))
+    (if (not= (get binding 1) input/invalid)
+      (input/bind input/layer/user (get binding 1) action))))
 
 (defn event [e]
   (cam/handle-event (state :camera) e))
 
 (defn update-doll []
+  (def player-transform
+    (game/object/get
+      (state :player)
+      component/transform))
+
   (if (> (input/state (actions :up)) 0)
-    (game/object/set (state :player) component/transform @[@[5.0 5.0 5.0] @[1.0 1.0 1.0] @[0.0 0.0 0.0 0.0]])
+    (game/object/set (state :player) component/transform
+                     @{:position @{:y (+ ((player-transform :position) :y) 0.1)}})
     (if (> (input/state (actions :down)) 0)
-      (print "down!!!")))
-  (if (> (input/state (actions :left)) 0) (print "left!!!")
-    (if (> (input/state (actions :right)) 0) (print "right!!!"))))
+      (game/object/set (state :player) component/transform
+                       @{:position @{:y (- ((player-transform :position) :y) 0.1)}})))
+  (if (> (input/state (actions :left)) 0)
+    (game/object/set (state :player) component/transform
+                     @{:position @{:x (+ ((player-transform :position) :x) 0.1)}})
+    (if (> (input/state (actions :right)) 0)
+      (game/object/set (state :player) component/transform
+                       @{:position @{:x (- ((player-transform :position) :x) 0.1)}}))))
 
 (defn update []
   (update-doll)
