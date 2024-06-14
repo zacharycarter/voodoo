@@ -1,0 +1,9 @@
+{
+  "skeleton": "character_skeleton.ozz",
+  "animations": [
+    "character_idle.ozz",
+    "character_running.ozz",
+    "character_walking.ozz"
+  ],
+  "mesh": "character_mesh.ozz"
+}
