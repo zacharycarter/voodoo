@@ -25,15 +25,25 @@ static struct {
     float* joint_upload_buffer;
 } state;
 
+struct ozz_clip_t {
+    ozz::animation::Animation anim;
+};
+
+struct ozz_animation_t {
+    uint32_t num_clips;
+    ozz_clip_t* clips[OZZ_MAX_CLIPS];
+    ozz::animation::SamplingJob::Context caches[OZZ_MAX_CLIPS];
+    ozz::vector<ozz::math::SoaTransform> local_matrices[OZZ_MAX_CLIPS];
+};
+
 struct ozz_private_t {
     int index;
+    ozz_animation_t *animation;
     ozz::animation::Skeleton skel;
-    ozz::animation::Animation anim;
     ozz::vector<uint16_t> joint_remaps;
-    ozz::vector<ozz::math::Float4x4> mesh_inverse_bindposes;
     ozz::vector<ozz::math::SoaTransform> local_matrices;
+    ozz::vector<ozz::math::Float4x4> mesh_inverse_bindposes;
     ozz::vector<ozz::math::Float4x4> model_matrices;
-    ozz::animation::SamplingJob::Context cache;
     sg_buffer vbuf = { };
     sg_buffer ibuf = { };
     int num_skin_joints;
@@ -122,9 +132,14 @@ void ozz_load_skeleton(ozz_instance_t* ozz, const void* data, size_t num_bytes) 
         self->skel_loaded = true;
         const int num_soa_joints = self->skel.num_soa_joints();
         const int num_joints = self->skel.num_joints();
-        self->local_matrices.resize(num_soa_joints);
+
+        ozz_animation_t *anim = self->animation;
+        for (int i = 0; i < anim->num_clips; ++i)
+        {
+            anim->local_matrices[i].resize(num_soa_joints);
+            anim->caches[i].Resize(num_joints);
+        }
         self->model_matrices.resize(num_joints);
-        self->cache.Resize(num_joints);
     }
     else {
         self->load_failed = true;
@@ -133,18 +148,19 @@ void ozz_load_skeleton(ozz_instance_t* ozz, const void* data, size_t num_bytes) 
 
 void ozz_load_animation(ozz_instance_t* ozz, const void* data, size_t num_bytes) {
     assert(state.valid && ozz && data && (num_bytes > 0));
-    ozz_private_t* self = (ozz_private_t*) ozz;
+    /*ozz_private_t* self = (ozz_private_t*) ozz;
     ozz::io::MemoryStream stream;
     stream.Write(data, num_bytes);
     stream.Seek(0, ozz::io::Stream::kSet);
     ozz::io::IArchive archive(&stream);
     if (archive.TestTag<ozz::animation::Animation>()) {
-        archive >> self->anim;
+        archive >> self->animation;
         self->anim_loaded = true;
     }
     else {
         self->load_failed = true;
     }
+    */
 }
 
 static uint32_t pack_u32(uint8_t x, uint8_t y, uint8_t z, uint8_t w) {
@@ -265,14 +281,14 @@ sg_buffer ozz_index_buffer(ozz_instance_t* ozz) {
 void ozz_update_instance(ozz_instance_t* ozz, double seconds) {
     assert(state.valid && ozz);
     assert(state.joint_upload_buffer);
-
+/*
     ozz_private_t* self = (ozz_private_t*) ozz;
     const float anim_duration = self->anim.duration();
     const float anim_ratio = fmodf((float)seconds / anim_duration, 1.0f);
 
     ozz::animation::SamplingJob sampling_job;
     sampling_job.animation = &self->anim;
-    sampling_job.context = &self->cache;
+    sampling_job.cache = &self->cache;
     sampling_job.ratio = anim_ratio;
     sampling_job.output = make_span(self->local_matrices);
     sampling_job.Run();
@@ -295,6 +311,7 @@ void ozz_update_instance(ozz_instance_t* ozz, double seconds) {
         *ptr++ = ozz::math::GetY(c0); *ptr++ = ozz::math::GetY(c1); *ptr++ = ozz::math::GetY(c2); *ptr++ = ozz::math::GetY(c3);
         *ptr++ = ozz::math::GetZ(c0); *ptr++ = ozz::math::GetZ(c1); *ptr++ = ozz::math::GetZ(c2); *ptr++ = ozz::math::GetZ(c3);
     }
+*/
 }
 
 void ozz_update_joint_texture(void) {

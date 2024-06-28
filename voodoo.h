@@ -4157,19 +4157,37 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
         printf("failed parsing doll file: unknown\n");
     }
 
+    char animation_names[3][64];
+    char animation_filepath[3][VD__MAX_PATH];
     char skeleton_filepath[VD__MAX_PATH];
-    char animation_filepath[VD__MAX_PATH];
     char mesh_filepath[VD__MAX_PATH];
 
     char dirname[VD__MAX_PATH];
     char tmpstr[VD__MAX_PATH];
     sx_os_path_dirname(dirname, sizeof(dirname), params->path);
+
+    int num_animations = 0;
+    int janimations;
+
+    if ((janimations = cj5_seek(&jres, 0, "animations")) != -1)
+    {
+        num_animations = jres.tokens[janimations].size;
+    }
+
     sx_os_path_join(skeleton_filepath, sizeof(skeleton_filepath), dirname,
                     cj5_seekget_string(&jres, 0, "skeleton", tmpstr, sizeof(tmpstr), ""));
     sx_os_path_unixpath(skeleton_filepath, sizeof(skeleton_filepath), skeleton_filepath);
-    sx_os_path_join(animation_filepath, sizeof(animation_filepath), dirname,
-                    cj5_seekget_string(&jres, 0, "animation", tmpstr, sizeof(tmpstr), ""));
-    sx_os_path_unixpath(animation_filepath, sizeof(animation_filepath), animation_filepath);
+
+    int janim = 0;
+    for (int i = 0; i < num_animations; i++)
+    {
+        janim = cj5_get_array_elem_incremental(&jres, janimations, i, janim);
+        sx_os_path_join(animation_filepath[i], sizeof(animation_filepath[i]), dirname,
+                        cj5_get_string(&jres, janim, tmpstr, sizeof(tmpstr)));
+        sx_os_path_unixpath(animation_filepath[i], sizeof(animation_filepath[i]), animation_filepath[i]);
+        printf("animation path added: %s\n", animation_filepath[i]);
+    }
+
     sx_os_path_join(mesh_filepath, sizeof(mesh_filepath), dirname,
                     cj5_seekget_string(&jres, 0, "mesh", tmpstr, sizeof(tmpstr), ""));
     sx_os_path_unixpath(mesh_filepath, sizeof(mesh_filepath), mesh_filepath);
@@ -4180,17 +4198,16 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
     sx_mem_block *skeleton_mem = sx_file_load_bin(alloc, skeleton_filepath);
     ozz_load_skeleton(doll->ozz, skeleton_mem->data, skeleton_mem->size);
 
-    printf("skeleton loaded from %s: %s\n", skeleton_filepath, ozz_load_failed(doll->ozz) ? "true" : "false");
-
-    sx_mem_block *animation_mem = sx_file_load_bin(alloc, animation_filepath);
-    ozz_load_animation(doll->ozz, animation_mem->data, animation_mem->size);
-
-    printf("animation loaded from %s: %s\n", animation_filepath, ozz_load_failed(doll->ozz) ? "true" : "false");
-
+    /*ozz_anim_desc_t desc;
+    for (int i = 0; i < num_animations; i++)
+    {
+        sx_mem_block *animation_mem = sx_file_load_bin(alloc, animation_filepath[i]);
+        desc.anims[i] = (ozz_anim_data_t){.data = animation_mem->data, .num_bytes = animation_mem->size};
+    }
+    ozz_load_animations(doll->ozz, &desc);
+*/
     sx_mem_block *mesh_mem = sx_file_load_bin(alloc, mesh_filepath);
     ozz_load_mesh(doll->ozz, mesh_mem->data, mesh_mem->size);
-
-    printf("mesh loaded from %s: %s\n", mesh_filepath, ozz_load_failed(doll->ozz) ? "true" : "false");
 
     printf("all loaded: %s\n", ozz_all_loaded(doll->ozz) ? "true" : "false");
 

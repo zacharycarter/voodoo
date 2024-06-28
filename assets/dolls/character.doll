@@ -1,9 +1,21 @@
 {
   "skeleton": "character_skeleton.ozz",
   "animations": [
-    "character_idle.ozz",
-    "character_running.ozz",
-    "character_walking.ozz"
+    {
+      "filename": "character_idle.ozz",
+      "loop": true,
+      "name": "idle"
+    },
+    {
+      "filename": "character_running.ozz",
+      "loop": true,
+      "name": "running"
+    },
+    {
+      "filename": "character_walking.ozz",
+      "loop": true,
+      "name": "walking"
+    }
   ],
   "mesh": "character_mesh.ozz"
 }
