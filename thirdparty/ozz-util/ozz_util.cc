@@ -10,9 +10,16 @@
 #include "ozz/base/containers/vector.h"
 #include "ozz/base/maths/soa_transform.h"
 #include "ozz/base/maths/vec_float.h"
+#include "ozz/base/maths/math_ex.h"
 #include "framework/mesh.h"
 
 #include "ozz_util.h"
+
+const int MAX_CLIPS = 10;
+
+struct clip {
+    ozz::animation::Animation anim;
+};
 
 static struct {
     bool valid;
@@ -25,27 +32,19 @@ static struct {
     float* joint_upload_buffer;
 } state;
 
-struct ozz_clip_t {
-    ozz::animation::Animation anim;
-};
-
-struct ozz_animation_t {
-    uint32_t num_clips;
-    ozz_clip_t* clips[OZZ_MAX_CLIPS];
-    ozz::animation::SamplingJob::Context caches[OZZ_MAX_CLIPS];
-    ozz::vector<ozz::math::SoaTransform> local_matrices[OZZ_MAX_CLIPS];
-};
-
 struct ozz_private_t {
     int index;
-    ozz_animation_t *animation;
     ozz::animation::Skeleton skel;
+    ozz::animation::Animation anim;
+    ozz::animation::Animation clips[MAX_CLIPS];
     ozz::vector<uint16_t> joint_remaps;
-    ozz::vector<ozz::math::SoaTransform> local_matrices;
     ozz::vector<ozz::math::Float4x4> mesh_inverse_bindposes;
+    ozz::vector<ozz::math::SoaTransform> local_matrices;
     ozz::vector<ozz::math::Float4x4> model_matrices;
+    ozz::animation::SamplingJob::Context cache;
     sg_buffer vbuf = { };
     sg_buffer ibuf = { };
+    int num_clips = -1;
     int num_skin_joints;
     int num_triangle_indices;
     bool skel_loaded = false;
@@ -114,7 +113,7 @@ ozz_instance_t* ozz_create_instance(int index) {
 void ozz_destroy_instance(ozz_instance_t* ozz) {
     assert(state.valid && ozz);
     ozz_private_t* self = (ozz_private_t*) ozz;
-    // it's ok to call sg_destroy_buffer with an invalid id    
+    // it's ok to call sg_destroy_buffer with an invalid id
     sg_destroy_buffer(self->vbuf);
     sg_destroy_buffer(self->ibuf);
     delete self;
@@ -132,35 +131,34 @@ void ozz_load_skeleton(ozz_instance_t* ozz, const void* data, size_t num_bytes) 
         self->skel_loaded = true;
         const int num_soa_joints = self->skel.num_soa_joints();
         const int num_joints = self->skel.num_joints();
-
-        ozz_animation_t *anim = self->animation;
-        for (int i = 0; i < anim->num_clips; ++i)
-        {
-            anim->local_matrices[i].resize(num_soa_joints);
-            anim->caches[i].Resize(num_joints);
-        }
+        printf("num joints in skeleton: %d\n", num_joints);
+        self->local_matrices.resize(num_soa_joints);
         self->model_matrices.resize(num_joints);
+        self->cache.Resize(num_joints);
+        printf("successfully loaded skeleton!\n");
     }
     else {
+        printf("loading skeleton failed!\n");
         self->load_failed = true;
     }
 }
 
 void ozz_load_animation(ozz_instance_t* ozz, const void* data, size_t num_bytes) {
     assert(state.valid && ozz && data && (num_bytes > 0));
-    /*ozz_private_t* self = (ozz_private_t*) ozz;
+    ozz_private_t* self = (ozz_private_t*) ozz;
     ozz::io::MemoryStream stream;
     stream.Write(data, num_bytes);
     stream.Seek(0, ozz::io::Stream::kSet);
     ozz::io::IArchive archive(&stream);
-    if (archive.TestTag<ozz::animation::Animation>()) {
-        archive >> self->animation;
+    if (archive.TestTag<ozz::animation::Animation>() && self->num_clips < MAX_CLIPS) {
+        self->num_clips++;
+        archive >> self->clips[self->num_clips];
+        // archive >> self->anim;
         self->anim_loaded = true;
     }
     else {
         self->load_failed = true;
     }
-    */
 }
 
 static uint32_t pack_u32(uint8_t x, uint8_t y, uint8_t z, uint8_t w) {
@@ -203,9 +201,9 @@ void ozz_load_mesh(ozz_instance_t* ozz, const void* data, size_t num_bytes) {
 
         // convert mesh data into packed vertices
         size_t num_vertices = (mesh.parts[0].positions.size() / 3);
-        assert(mesh.parts[0].normals.size() == (num_vertices * 3));
-        assert(mesh.parts[0].joint_indices.size() == (num_vertices * 4));
-        assert(mesh.parts[0].joint_weights.size() == (num_vertices * 3));
+        const int8_t normal_stride = mesh.parts[0].normals.size() / num_vertices;
+        const int8_t joint_index_stride = mesh.parts[0].joint_indices.size() / num_vertices;
+        const int8_t joint_weight_stride = mesh.parts[0].joint_weights.size() / num_vertices;
         const float* positions = &mesh.parts[0].positions[0];
         const float* normals = &mesh.parts[0].normals[0];
         const uint16_t* joint_indices = &mesh.parts[0].joint_indices[0];
@@ -216,18 +214,18 @@ void ozz_load_mesh(ozz_instance_t* ozz, const void* data, size_t num_bytes) {
             v->position[0] = positions[i * 3 + 0];
             v->position[1] = positions[i * 3 + 1];
             v->position[2] = positions[i * 3 + 2];
-            const float nx = normals[i * 3 + 0];
-            const float ny = normals[i * 3 + 1];
-            const float nz = normals[i * 3 + 2];
+            const float nx = normals[i * normal_stride + 0];
+            const float ny = normals[i * normal_stride + 1];
+            const float nz = normals[i * normal_stride + 2];
             v->normal = pack_f4_byte4n(nx, ny, nz, 0.0f);
-            const uint8_t ji0 = (uint8_t) joint_indices[i * 4 + 0];
-            const uint8_t ji1 = (uint8_t) joint_indices[i * 4 + 1];
-            const uint8_t ji2 = (uint8_t) joint_indices[i * 4 + 2];
-            const uint8_t ji3 = (uint8_t) joint_indices[i * 4 + 3];
+            const uint8_t ji0 = (uint8_t) joint_indices[i * joint_index_stride + 0];
+            const uint8_t ji1 = (uint8_t) joint_indices[i * joint_index_stride + 1];
+            const uint8_t ji2 = (uint8_t) joint_indices[i * joint_index_stride + 2];
+            const uint8_t ji3 = (uint8_t) joint_indices[i * joint_index_stride + 3];
             v->joint_indices = pack_u32(ji0, ji1, ji2, ji3);
-            const float jw0 = joint_weights[i * 3 + 0];
-            const float jw1 = joint_weights[i * 3 + 1];
-            const float jw2 = joint_weights[i * 3 + 2];
+            const float jw0 = joint_weights[i * joint_weight_stride + 0];
+            const float jw1 = joint_weights[i * joint_weight_stride + 1];
+            const float jw2 = joint_weights[i * joint_weight_stride + 2];
             const float jw3 = 1.0f - (jw0 + jw1 + jw2);
             v->joint_weights = pack_f4_ubyte4n(jw0, jw1, jw2, jw3);
         }
@@ -281,14 +279,14 @@ sg_buffer ozz_index_buffer(ozz_instance_t* ozz) {
 void ozz_update_instance(ozz_instance_t* ozz, double seconds) {
     assert(state.valid && ozz);
     assert(state.joint_upload_buffer);
-/*
+
     ozz_private_t* self = (ozz_private_t*) ozz;
-    const float anim_duration = self->anim.duration();
+    const float anim_duration = self->clips[self->num_clips].duration();
     const float anim_ratio = fmodf((float)seconds / anim_duration, 1.0f);
 
     ozz::animation::SamplingJob sampling_job;
-    sampling_job.animation = &self->anim;
-    sampling_job.cache = &self->cache;
+    sampling_job.animation = &self->clips[self->num_clips];
+    sampling_job.context = &self->cache;
     sampling_job.ratio = anim_ratio;
     sampling_job.output = make_span(self->local_matrices);
     sampling_job.Run();
@@ -311,7 +309,6 @@ void ozz_update_instance(ozz_instance_t* ozz, double seconds) {
         *ptr++ = ozz::math::GetY(c0); *ptr++ = ozz::math::GetY(c1); *ptr++ = ozz::math::GetY(c2); *ptr++ = ozz::math::GetY(c3);
         *ptr++ = ozz::math::GetZ(c0); *ptr++ = ozz::math::GetZ(c1); *ptr++ = ozz::math::GetZ(c2); *ptr++ = ozz::math::GetZ(c3);
     }
-*/
 }
 
 void ozz_update_joint_texture(void) {

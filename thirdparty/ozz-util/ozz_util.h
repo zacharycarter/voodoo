@@ -6,9 +6,6 @@
 #include <stdbool.h>
 #include "sokol_gfx.h"
 
-#define OZZ_MAX_CLIPS 3
-#define OZZ_INVALID_ANIM_ID -1
-
 #if defined(__cplusplus)
 extern "C" {
 #endif
@@ -28,15 +25,6 @@ typedef struct {
     int max_instances;
 } ozz_desc_t;
 
-/*typedef struct {
-    size_t num_bytes;
-    void* data;
-} ozz_anim_data_t;
-
-typedef struct {
-    ozz_anim_data_t anims[OZZ_MAX_ANIMS];
-} ozz_anim_desc_t;
-*/
 void ozz_setup(const ozz_desc_t* desc);
 void ozz_shutdown(void);
 sg_image ozz_joint_texture(void);
@@ -52,7 +40,6 @@ void ozz_load_animation(ozz_instance_t* ozz, const void* data, size_t num_bytes)
 void ozz_load_mesh(ozz_instance_t* ozz, const void* data, size_t num_bytes);
 void ozz_set_load_failed(ozz_instance_t* ozz);
 void ozz_update_instance(ozz_instance_t* ozz, double seconds);
-void ozz_play_animation(ozz_instance_t* ozz, const char *name);
 void ozz_update_joint_texture(void);
 float ozz_joint_texture_pixel_width(void);
 float ozz_joint_texture_u(ozz_instance_t* ozz);

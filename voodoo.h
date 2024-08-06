@@ -4157,22 +4157,22 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
         printf("failed parsing doll file: unknown\n");
     }
 
-    char animation_names[3][64];
-    char animation_filepath[3][VD__MAX_PATH];
     char skeleton_filepath[VD__MAX_PATH];
+    char animation_filepath[3][VD__MAX_PATH];
     char mesh_filepath[VD__MAX_PATH];
 
     char dirname[VD__MAX_PATH];
     char tmpstr[VD__MAX_PATH];
     sx_os_path_dirname(dirname, sizeof(dirname), params->path);
 
-    int num_animations = 0;
-    int janimations;
+    int janimations, num_animations = 0;
 
     if ((janimations = cj5_seek(&jres, 0, "animations")) != -1)
     {
         num_animations = jres.tokens[janimations].size;
     }
+
+    printf("found %d animations!\n", num_animations);
 
     sx_os_path_join(skeleton_filepath, sizeof(skeleton_filepath), dirname,
                     cj5_seekget_string(&jres, 0, "skeleton", tmpstr, sizeof(tmpstr), ""));
@@ -4183,10 +4183,10 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
     {
         janim = cj5_get_array_elem_incremental(&jres, janimations, i, janim);
         sx_os_path_join(animation_filepath[i], sizeof(animation_filepath[i]), dirname,
-                        cj5_get_string(&jres, janim, tmpstr, sizeof(tmpstr)));
+                        cj5_seekget_string(&jres, janim, "filename", tmpstr, sizeof(tmpstr), ""));
         sx_os_path_unixpath(animation_filepath[i], sizeof(animation_filepath[i]), animation_filepath[i]);
-        printf("animation path added: %s\n", animation_filepath[i]);
     }
+
 
     sx_os_path_join(mesh_filepath, sizeof(mesh_filepath), dirname,
                     cj5_seekget_string(&jres, 0, "mesh", tmpstr, sizeof(tmpstr), ""));
@@ -4198,16 +4198,20 @@ static vd__asset_load_data vd__v3d_doll_on_prepare(const vd__asset_load_params *
     sx_mem_block *skeleton_mem = sx_file_load_bin(alloc, skeleton_filepath);
     ozz_load_skeleton(doll->ozz, skeleton_mem->data, skeleton_mem->size);
 
-    /*ozz_anim_desc_t desc;
+    printf("skeleton loaded from %s: %s\n", skeleton_filepath, ozz_load_failed(doll->ozz) ? "false" : "true");
+
     for (int i = 0; i < num_animations; i++)
     {
         sx_mem_block *animation_mem = sx_file_load_bin(alloc, animation_filepath[i]);
-        desc.anims[i] = (ozz_anim_data_t){.data = animation_mem->data, .num_bytes = animation_mem->size};
+        ozz_load_animation(doll->ozz, animation_mem->data, animation_mem->size);
+
+        printf("animation loaded from %s: %s\n", animation_filepath[i], ozz_load_failed(doll->ozz) ? "false" : "true");
     }
-    ozz_load_animations(doll->ozz, &desc);
-*/
+
     sx_mem_block *mesh_mem = sx_file_load_bin(alloc, mesh_filepath);
     ozz_load_mesh(doll->ozz, mesh_mem->data, mesh_mem->size);
+
+    printf("mesh loaded from %s: %s\n", mesh_filepath, ozz_load_failed(doll->ozz) ? "false" : "true");
 
     printf("all loaded: %s\n", ozz_all_loaded(doll->ozz) ? "true" : "false");
 
@@ -4439,7 +4443,9 @@ static void vd__v3d_shadow_pass_run(vd__v3d_offscreen_pass *shadow, HMM_Mat4 lig
 
         for (int i = 0; i < dit.count; i++)
         {
-            HMM_Mat4 model = HMM_Translate(HMM_V3(t[i].position.x, t[i].position.y, t[i].position.z));
+            HMM_Mat4 translate = HMM_Translate(HMM_V3(t[i].position.x, t[i].position.y, t[i].position.z));
+            HMM_Mat4 scale = HMM_Scale(HMM_V3(0.25f, 0.25f, 0.25f));
+            HMM_Mat4 model = HMM_MulM4(scale, translate);
             vd__state.v3d.fwd.shadow_doll_uniforms.mvp = HMM_MulM4(light_view_proj, model);
             vd__state.v3d.fwd.shadow_doll_uniforms.joint_uv =
                 HMM_V2(ozz_joint_texture_u(d[i].doll->ozz), ozz_joint_texture_v(d[i].doll->ozz));
@@ -4704,7 +4710,9 @@ static void vd__v3d_render(vd__camera *cam)
 
         for (int i = 0; i < dit.count; i++)
         {
-            HMM_Mat4 model = HMM_Translate(HMM_V3(t[i].position.x, t[i].position.y, t[i].position.z));
+            HMM_Mat4 translate = HMM_Translate(HMM_V3(t[i].position.x, t[i].position.y, t[i].position.z));
+            HMM_Mat4 scale = HMM_Scale(HMM_V3(0.25f, 0.25f, 0.25f));
+            HMM_Mat4 model = HMM_MulM4(scale, translate);
             vd__state.v3d.fwd.doll_uniforms.vs.mvp = HMM_MulM4(cam->view_proj, model);
             vd__state.v3d.fwd.doll_uniforms.vs.model = model;
             vd__state.v3d.fwd.doll_uniforms.vs.joint_uv =

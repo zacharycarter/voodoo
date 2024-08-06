@@ -14,7 +14,7 @@
              :player: nil})
 
 (defn init []
-  (set (state :doll-asset) (asset/load "doll" "/assets/dolls/ozz_skin.doll"))
+  (set (state :doll-asset) (asset/load "doll" "assets/dolls/character.doll"))
   (set (state :camera) (cam/orbit @{:min-dist 1.0
                                     :max-dist 50.0
                                     :center @[0.0 0.0 0.0]
