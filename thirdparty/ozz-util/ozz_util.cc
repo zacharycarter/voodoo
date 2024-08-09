@@ -2,6 +2,7 @@
 //  ozz_util.cc
 //------------------------------------------------------------------------------
 #include "ozz/animation/runtime/animation.h"
+#include "ozz/animation/runtime/blending_job.h"
 #include "ozz/animation/runtime/skeleton.h"
 #include "ozz/animation/runtime/sampling_job.h"
 #include "ozz/animation/runtime/local_to_model_job.h"
@@ -12,14 +13,11 @@
 #include "ozz/base/maths/vec_float.h"
 #include "ozz/base/maths/math_ex.h"
 #include "framework/mesh.h"
+#include "framework/utils.h"
 
 #include "ozz_util.h"
 
-const int MAX_CLIPS = 10;
-
-struct clip {
-    ozz::animation::Animation anim;
-};
+const int MAX_SAMPLERS = 10;
 
 static struct {
     bool valid;
@@ -32,21 +30,29 @@ static struct {
     float* joint_upload_buffer;
 } state;
 
+typedef struct ozz_sampler_t {
+    ozz::sample::PlaybackController controller;
+    float weight = 0.f;
+    ozz::animation::Animation animation;
+    ozz::animation::SamplingJob::Context cache;
+    ozz::vector<ozz::math::SoaTransform> local_matrices;
+} ozz_sampler_t;
+
 struct ozz_private_t {
     int index;
     ozz::animation::Skeleton skel;
     ozz::animation::Animation anim;
-    ozz::animation::Animation clips[MAX_CLIPS];
+    ozz_sampler_t samplers[MAX_SAMPLERS];
     ozz::vector<uint16_t> joint_remaps;
     ozz::vector<ozz::math::Float4x4> mesh_inverse_bindposes;
-    ozz::vector<ozz::math::SoaTransform> local_matrices;
     ozz::vector<ozz::math::Float4x4> model_matrices;
-    ozz::animation::SamplingJob::Context cache;
+    ozz::vector<ozz::math::SoaTransform> blended_locals;
     sg_buffer vbuf = { };
     sg_buffer ibuf = { };
-    int num_clips = -1;
+    int num_samplers = -1;
     int num_skin_joints;
     int num_triangle_indices;
+    float blend_ratio = .3f;
     bool skel_loaded = false;
     bool anim_loaded = false;
     bool mesh_loaded = false;
@@ -132,9 +138,7 @@ void ozz_load_skeleton(ozz_instance_t* ozz, const void* data, size_t num_bytes) 
         const int num_soa_joints = self->skel.num_soa_joints();
         const int num_joints = self->skel.num_joints();
         printf("num joints in skeleton: %d\n", num_joints);
-        self->local_matrices.resize(num_soa_joints);
         self->model_matrices.resize(num_joints);
-        self->cache.Resize(num_joints);
         printf("successfully loaded skeleton!\n");
     }
     else {
@@ -150,9 +154,9 @@ void ozz_load_animation(ozz_instance_t* ozz, const void* data, size_t num_bytes)
     stream.Write(data, num_bytes);
     stream.Seek(0, ozz::io::Stream::kSet);
     ozz::io::IArchive archive(&stream);
-    if (archive.TestTag<ozz::animation::Animation>() && self->num_clips < MAX_CLIPS) {
-        self->num_clips++;
-        archive >> self->clips[self->num_clips];
+    if (archive.TestTag<ozz::animation::Animation>() && self->num_samplers < MAX_SAMPLERS) {
+        self->num_samplers++;
+        archive >> self->samplers[self->num_samplers].animation;
         // archive >> self->anim;
         self->anim_loaded = true;
     }
@@ -249,6 +253,17 @@ void ozz_load_mesh(ozz_instance_t* ozz, const void* data, size_t num_bytes) {
     }
 }
 
+void ozz_initialize_instance(ozz_instance_t* ozz) {
+    assert(state.valid && ozz);
+    ozz_private_t* self = (ozz_private_t*) ozz;
+
+    for (int i = 0; i < self->num_samplers; i++) {
+        self->samplers[i].local_matrices.resize(self->skel.num_soa_joints());
+        self->samplers[i].cache.Resize(self->skel.num_joints());
+    }
+    self->blended_locals.resize(self->skel.num_soa_joints());
+}
+
 void ozz_set_load_failed(ozz_instance_t* ozz) {
     assert(state.valid && ozz);
     ozz_private_t* self = (ozz_private_t*) ozz;
@@ -258,7 +273,9 @@ void ozz_set_load_failed(ozz_instance_t* ozz) {
 bool ozz_all_loaded(ozz_instance_t* ozz) {
     assert(state.valid && ozz);
     ozz_private_t* self = (ozz_private_t*) ozz;
-    return self->skel_loaded && self->anim_loaded && self->mesh_loaded && !self->load_failed;
+    bool all_loaded = self->skel_loaded && self->anim_loaded && self->mesh_loaded && !self->load_failed;
+    if (all_loaded) ozz_initialize_instance(ozz);
+    return all_loaded;
 }
 
 bool ozz_load_failed(ozz_instance_t* ozz) {
@@ -276,24 +293,78 @@ sg_buffer ozz_index_buffer(ozz_instance_t* ozz) {
     return ((ozz_private_t*)ozz)->ibuf;
 }
 
-void ozz_update_instance(ozz_instance_t* ozz, double seconds) {
+void ozz_update_instance(ozz_instance_t* ozz, float dt) {
     assert(state.valid && ozz);
     assert(state.joint_upload_buffer);
 
     ozz_private_t* self = (ozz_private_t*) ozz;
-    const float anim_duration = self->clips[self->num_clips].duration();
-    const float anim_ratio = fmodf((float)seconds / anim_duration, 1.0f);
 
-    ozz::animation::SamplingJob sampling_job;
-    sampling_job.animation = &self->clips[self->num_clips];
-    sampling_job.context = &self->cache;
-    sampling_job.ratio = anim_ratio;
-    sampling_job.output = make_span(self->local_matrices);
-    sampling_job.Run();
+    // Computes weight parameters for all samplers.
+    const float kNumIntervals = self->num_samplers - 1;
+    const float kInterval = 1.f / kNumIntervals;
+    for (int i = 0; i < self->num_samplers; ++i) {
+      const float med = i * kInterval;
+      const float x = self->blend_ratio - med;
+      const float y = ((x < 0.f ? x : -x) + kInterval) * kNumIntervals;
+      self->samplers[i].weight = ozz::math::Max(0.f, y);
+    }
+
+    // Synchronizes animations.
+    // First computes loop cycle duration. Selects the 2 samplers that define
+    // interval that contains blend_ratio.
+    // Uses a maximum value smaller that 1.f (-epsilon) to ensure that
+    // (relevant_sampler + 1) is always valid.
+    const int relevant_sampler =
+        static_cast<int>((self->blend_ratio - 1e-3f) * (self->num_samplers - 1));
+    assert(relevant_sampler + 1 < self->num_samplers);
+    ozz_sampler_t& sampler_l = self->samplers[relevant_sampler];
+    ozz_sampler_t& sampler_r = self->samplers[relevant_sampler + 1];
+
+    // Interpolates animation durations using their respective weights, to
+    // find the loop cycle duration that matches blend_ratio.
+    const float loop_duration =
+        sampler_l.animation.duration() * sampler_l.weight +
+        sampler_r.animation.duration() * sampler_r.weight;
+
+    // Finally finds the speed coefficient for all samplers.
+    const float inv_loop_duration = 1.f / loop_duration;
+    for (int i = 0; i < self->num_samplers; ++i) {
+      ozz_sampler_t& sampler = self->samplers[i];
+      const float speed = sampler.animation.duration() * inv_loop_duration;
+      sampler.controller.set_playback_speed(speed);
+    }
+
+    for (int i = 0; i < self->num_samplers; i++) {
+        ozz_sampler_t& sampler = self->samplers[i];
+
+        sampler.controller.Update(sampler.animation, dt);
+
+        if (sampler.weight <= 0.f) continue;
+
+        ozz::animation::SamplingJob sampling_job;
+        sampling_job.animation = &sampler.animation;
+        sampling_job.context = &sampler.cache;
+        sampling_job.ratio = sampler.controller.time_ratio();
+        sampling_job.output = make_span(sampler.local_matrices);
+        sampling_job.Run();
+    }
+
+    ozz::animation::BlendingJob::Layer* layers = (ozz::animation::BlendingJob::Layer*)calloc(self->num_samplers, sizeof(ozz::animation::BlendingJob::Layer));
+    for (int i = 0; i < self->num_samplers; i++) {
+        layers[i].transform = make_span(self->samplers[i].local_matrices);
+        layers[i].weight = self->samplers[i].weight;
+    }
+
+    ozz::animation::BlendingJob blend_job;
+    blend_job.threshold = ozz::animation::BlendingJob().threshold;
+    blend_job.layers = ozz::span<ozz::animation::BlendingJob::Layer>(layers, self->num_samplers);
+    blend_job.rest_pose = self->skel.joint_rest_poses();
+    blend_job.output = make_span(self->blended_locals);
+    blend_job.Run();
 
     ozz::animation::LocalToModelJob ltm_job;
     ltm_job.skeleton = &self->skel;
-    ltm_job.input = make_span(self->local_matrices);
+    ltm_job.input = make_span(self->blended_locals);
     ltm_job.output = make_span(self->model_matrices);
     ltm_job.Run();
 

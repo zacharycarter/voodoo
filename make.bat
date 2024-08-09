@@ -120,11 +120,13 @@ call .\tools\bin\win32\sokol-shdc.exe -i .\assets\shaders\src\doll.glsl -o .\ass
 call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -g -O0 -I.\thirdparty\ozz-animation\include .\thirdparty\ozz-animation\.build\src_fused\ozz_base.cc  -o.\thirdparty\ozz-animation\.build\src_fused\ozz_base.bc
 call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -g -O0 -I.\thirdparty\ozz-animation\include .\thirdparty\ozz-animation\.build\src_fused\ozz_animation.cc -o.\thirdparty\ozz-animation\.build\src_fused\ozz_animation.bc
 call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -g -O0 -I.\thirdparty\ozz-animation\include -I.\thirdparty\ozz-animation\samples\framework .\thirdparty\ozz-animation\samples\framework\mesh.cc -o.\thirdparty\ozz-animation\.build\src_fused\mesh.bc
+call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -g -O0 -I.\thirdparty\ozz-animation\include -I.\thirdparty\ozz-animation\samples .\thirdparty\ozz-animation\samples\framework\utils.cc -o.\thirdparty\ozz-animation\.build\src_fused\utils.bc
 call em++ -emit-llvm -std=c++17 -c -msimd128 -mavx -pthread -g -O0 -I.\thirdparty\sokol -I.\thirdparty\ozz-animation\include -I.\thirdparty\ozz-animation\samples -I.\thirdparty\ozz-util .\thirdparty\ozz-util\ozz_util.cc -o.\thirdparty\ozz-util\ozz_util.bc
 call emar.bat rcu .\thirdparty\ozz-animation\ozz.a^
  .\thirdparty\ozz-animation\.build\src_fused\ozz_base.bc^
  .\thirdparty\ozz-animation\.build\src_fused\ozz_animation.bc^
  .\thirdparty\ozz-animation\.build\src_fused\mesh.bc^
+ .\thirdparty\ozz-animation\.build\src_fused\utils.bc^
  .\thirdparty\ozz-util\ozz_util.bc
 
 @REM call emcc %* -g -O2 -fsanitize=address -fsanitize-recover=address -msimd128 -mavx -s ASSERTIONS=2 -s NO_EXIT_RUNTIME=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=6 -s STACK_SIZE=256MB -s INITIAL_MEMORY=512MB -DUSE_DBG_UI -I.\assets\shaders\wgsl -I.\thirdparty -I./thirdparty/sx/include -I./thirdparty/stackwalkerc -I.\thirdparty\cj5 -I.\thirdparty\hmm -I.\thirdparty\janet -I.\thirdparty\sokol -I.\thirdparty\ozz-util -o .\web\voodoo.js -s USE_WEBGPU=1 -s ASYNCIFY=1 -Wfatal-errors --preload-file .\assets\scripts\game.janet --preload-file .\assets\dolls\ozz_skin.doll --preload-file .\assets\dolls\ozz_skin_skeleton.ozz -s ALLOW_MEMORY_GROWTH=1 -s MODULARIZE=1 -s EXPORT_ES6 -s EXPORT_NAME="'Voodoo'" -s EXPORTED_RUNTIME_METHODS=["FS"] -lidbfs.js .\thirdparty\ozz-animation\ozz.a

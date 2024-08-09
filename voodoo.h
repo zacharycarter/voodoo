@@ -4632,7 +4632,7 @@ static void vd__v3d_update()
             if (ozz_all_loaded(d[i].doll->ozz))
             {
                 d[i].time_sec += vd__core_delta_time();
-                ozz_update_instance(d[i].doll->ozz, d[i].time_sec);
+                ozz_update_instance(d[i].doll->ozz, vd__core_delta_time());
                 ozz_update_joint_texture();
             }
         }

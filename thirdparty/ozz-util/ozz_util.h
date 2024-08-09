@@ -39,7 +39,7 @@ void ozz_load_skeleton(ozz_instance_t* ozz, const void* data, size_t num_bytes);
 void ozz_load_animation(ozz_instance_t* ozz, const void* data, size_t num_bytes);
 void ozz_load_mesh(ozz_instance_t* ozz, const void* data, size_t num_bytes);
 void ozz_set_load_failed(ozz_instance_t* ozz);
-void ozz_update_instance(ozz_instance_t* ozz, double seconds);
+void ozz_update_instance(ozz_instance_t* ozz, float dt);
 void ozz_update_joint_texture(void);
 float ozz_joint_texture_pixel_width(void);
 float ozz_joint_texture_u(ozz_instance_t* ozz);
