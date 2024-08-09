@@ -95,9 +95,9 @@ voodoo is very much WIP.
 - [ ] Visual scripting
 - [ ] Forward renderer :construction:
 - [ ] ImGui
-- [ ] Entity component system :construction:
-- [ ] Skeletal animation :construction:
-- [ ] Animation controller
+- [x] Entity component system
+- [x] Skeletal animation
+- [x] Animation blending
 - [ ] Audio
 - [ ] Physics
 - [ ] Networking
