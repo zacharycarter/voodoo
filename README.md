@@ -20,8 +20,7 @@ voodoo is very much WIP.
 
 ## [Example Usage](https://github.com/zacharycarter/voodoo/blob/master/assets/scripts/game.janet)
 
-```janet
-(def actions {:up 0
+```janet(def actions {:up 0
               :down 1
               :left 2
               :right 3
@@ -37,32 +36,55 @@ voodoo is very much WIP.
              :player: nil})
 
 (defn init []
-  (set (state :doll-asset) (asset/load "doll" "/assets/dolls/ozz_skin.doll"))
+  (set (state :doll-asset) (asset/load "doll" "assets/dolls/character.doll"))
   (set (state :camera) (cam/orbit @{:min-dist 1.0
-                                  :max-dist 50.0
-                                  :center @[0.0 0.0 0.0]
-                                  :distance 5.0
-                                  :latitude 45.0
-                                  :longitude 45.0
-                                  :nearz 0.01
-                                  :farz 2000.0}))
+                                    :max-dist 50.0
+                                    :center @[0.0 0.0 0.0]
+                                    :distance 5.0
+                                    :latitude 45.0
+                                    :longitude 45.0
+                                    :nearz 0.01
+                                    :farz 2000.0}))
 
   (v3d/cube @[0.0 5.0 0.0] @[1.0 1.0 1.0])
   (v3d/cube @[0.0 -0.9375 0.0] @[5.0 0.125 5.0])
   (set (state :player) (game/object @[0.0 0.0 0.0] @[1.0 1.0 1.0] @[0.0 0.0 0.0 0.0]))
-  (game/object/add-component (state :player) component/doll (v3d/doll/create (state :doll-asset)))
+  (game/object/set (state :player) component/doll (v3d/doll/create (state :doll-asset)))
   (loop [[action binding] :pairs bindings]
-    (if (not= (get binding 0) input/invalid) (input/bind input/layer/user (get binding 0) action))
-    (if (not= (get binding 1) input/invalid) (input/bind input/layer/user (get binding 1) action))))
+    (if (not= (get binding 0) input/invalid)
+      (input/bind input/layer/user (get binding 0) action))
+    (if (not= (get binding 1) input/invalid)
+      (input/bind input/layer/user (get binding 1) action))))
 
 (defn event [e]
   (cam/handle-event (state :camera) e))
 
 (defn update-doll []
-  (if (> (input/state (actions :up)) 0) (print "up!!!")
-      (if (> (input/state (actions :down)) 0) (print "down!!!")))
-  (if (> (input/state (actions :left)) 0) (print "left!!!")
-      (if (> (input/state (actions :right)) 0) (print "right!!!"))))
+  (def player-transform
+    (game/object/get
+      (state :player)
+      component/transform))
+  (def doll
+    (game/object/get
+      (state :player)
+      component/doll))
+
+  (if (> (input/state (actions :up)) 0)
+#    (game/object/set (state :player) component/transform
+#                     @{:position @{:y (+ ((player-transform :position) :y) 0.1)}})
+    (game/object/set (state :player) component/doll
+                     @{:blend_ratio (min (+ (doll :blend_ratio) 0.1) 1.0)})
+    (if (> (input/state (actions :down)) 0)
+#      (game/object/set (state :player) component/transform
+#                       @{:position @{:y (- ((player-transform :position) :y) 0.1)}})))
+      (game/object/set (state :player) component/doll
+                       @{:blend_ratio (max (- (doll :blend_ratio) 0.1) 0.0)})))
+  (if (> (input/state (actions :left)) 0)
+    (game/object/set (state :player) component/transform
+                     @{:position @{:x (+ ((player-transform :position) :x) 0.1)}})
+    (if (> (input/state (actions :right)) 0)
+      (game/object/set (state :player) component/transform
+                       @{:position @{:x (- ((player-transform :position) :x) 0.1)}}))))
 
 (defn update []
   (update-doll)
@@ -72,14 +94,6 @@ voodoo is very much WIP.
   (v3d/draw (state :camera)))
 
 (defn shutdown [])
-
-(defn voodoo []
-  @{:width 960
-    :height 540
-    :init init
-    :event event
-    :update update
-    :shutdown shutdown})
 ```
 
 ## Roadmap
@@ -88,7 +102,7 @@ voodoo is very much WIP.
 - [ ] Build system :construction:
 - [x] Virtual file system
 - [x] Asset management system
-- [x] Fiber-based job system
+- [x] Fiber-based job syste m
 - [x] Basic orbit camera
 - [x] Debug drawing
 - [x] Scripting
