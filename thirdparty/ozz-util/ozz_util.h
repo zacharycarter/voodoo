@@ -38,6 +38,8 @@ bool ozz_load_failed(ozz_instance_t* ozz);
 void ozz_load_skeleton(ozz_instance_t* ozz, const void* data, size_t num_bytes);
 void ozz_load_animation(ozz_instance_t* ozz, const void* data, size_t num_bytes);
 void ozz_load_mesh(ozz_instance_t* ozz, const void* data, size_t num_bytes);
+void ozz_set_blend_ratio(ozz_instance_t* ozz, float blend_ratio);
+float ozz_blend_ratio(ozz_instance_t* ozz);
 void ozz_set_load_failed(ozz_instance_t* ozz);
 void ozz_update_instance(ozz_instance_t* ozz, float dt);
 void ozz_update_joint_texture(void);

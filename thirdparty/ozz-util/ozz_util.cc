@@ -49,10 +49,10 @@ struct ozz_private_t {
     ozz::vector<ozz::math::SoaTransform> blended_locals;
     sg_buffer vbuf = { };
     sg_buffer ibuf = { };
-    int num_samplers = -1;
+    int num_samplers;
     int num_skin_joints;
     int num_triangle_indices;
-    float blend_ratio = .3f;
+    float blend_ratio;
     bool skel_loaded = false;
     bool anim_loaded = false;
     bool mesh_loaded = false;
@@ -156,7 +156,7 @@ void ozz_load_animation(ozz_instance_t* ozz, const void* data, size_t num_bytes)
     ozz::io::IArchive archive(&stream);
     if (archive.TestTag<ozz::animation::Animation>() && self->num_samplers < MAX_SAMPLERS) {
         self->num_samplers++;
-        archive >> self->samplers[self->num_samplers].animation;
+        archive >> self->samplers[self->num_samplers - 1].animation;
         // archive >> self->anim;
         self->anim_loaded = true;
     }
@@ -268,6 +268,18 @@ void ozz_set_load_failed(ozz_instance_t* ozz) {
     assert(state.valid && ozz);
     ozz_private_t* self = (ozz_private_t*) ozz;
     self->load_failed = true;
+}
+
+float ozz_blend_ratio(ozz_instance_t* ozz) {
+    assert(state.valid && ozz);
+    ozz_private_t* self = (ozz_private_t*) ozz;
+    return self->blend_ratio;
+}
+
+void ozz_set_blend_ratio(ozz_instance_t* ozz, float blend_ratio) {
+    assert(state.valid && ozz);
+    ozz_private_t* self = (ozz_private_t*) ozz;
+    self->blend_ratio = blend_ratio;
 }
 
 bool ozz_all_loaded(ozz_instance_t* ozz) {

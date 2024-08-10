@@ -2414,11 +2414,26 @@ ECS_STRUCT(vd__doll, {
     float time_factor;
     double time_sec;
     vd__transform transform;
+    float blend_ratio;
     ECS_PRIVATE
     sg_buffer vertex_buffer;
     sg_buffer index_buffer;
     vd__v3d_doll *doll;
 });
+
+static int vd__doll_get(void *ptr, Janet key, Janet *out)
+{
+    vd__doll* d = ptr;
+    if (janet_keyeq(key, "blend_ratio"))
+    {
+        *out = janet_wrap_number(ozz_blend_ratio(d->doll->ozz));
+        return 1;
+    }
+    return 0;
+}
+
+static const JanetAbstractType vd__doll_at = {
+    "voodoo/component/doll", NULL, NULL, vd__doll_get, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 
 static ecs_meta_cursor_t *vd__ecs_janet_cursor(ecs_entity_t type, void *base)
 {
@@ -4028,6 +4043,13 @@ static Janet cfun_vd_game_object_get(int32_t argc, Janet *argv)
         *res = *transform;
         return janet_wrap_abstract(res);
     }
+    if (component_type_info->component == ecs_id(vd__doll))
+    {
+        const vd__doll *doll = ecs_get_id(vd__state.ecs.world, game_object_entity, component_id);
+        vd__doll *res = janet_abstract(&vd__doll_at, component_type_info->size);
+        *res = *doll;
+        return janet_wrap_abstract(res);
+    }
     return janet_wrap_nil();
 }
 
@@ -4093,8 +4115,6 @@ typedef struct
 } vd__skeleton_load_params;
 
 typedef struct vd__mesh_load_params vd__mesh_load_params;
-
-static const JanetAbstractType vd__doll_at = {"voodoo/v3d/doll", JANET_ATEND_NAME};
 
 static vd__asset_load_data vd__v3d_skeleton_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
 {
@@ -4632,6 +4652,7 @@ static void vd__v3d_update()
             if (ozz_all_loaded(d[i].doll->ozz))
             {
                 d[i].time_sec += vd__core_delta_time();
+                ozz_set_blend_ratio(d[i].doll->ozz, d[i].blend_ratio);
                 ozz_update_instance(d[i].doll->ozz, vd__core_delta_time());
                 ozz_update_joint_texture();
             }
@@ -4804,6 +4825,7 @@ static Janet cfun_vd_v3d_doll(int32_t argc, Janet *argv)
     *doll = (vd__doll){0.0f,
                        0.0,
                        {{0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, 0.0f, 0.0f}},
+                       0.0f,
                        ozz_vertex_buffer(d->ozz),
                        ozz_index_buffer(d->ozz),
                        d};

@@ -42,13 +42,21 @@
     (game/object/get
       (state :player)
       component/transform))
+  (def doll
+    (game/object/get
+      (state :player)
+      component/doll))
 
   (if (> (input/state (actions :up)) 0)
-    (game/object/set (state :player) component/transform
-                     @{:position @{:y (+ ((player-transform :position) :y) 0.1)}})
+#    (game/object/set (state :player) component/transform
+#                     @{:position @{:y (+ ((player-transform :position) :y) 0.1)}})
+    (game/object/set (state :player) component/doll
+                     @{:blend_ratio (min (+ (doll :blend_ratio) 0.1) 1.0)})
     (if (> (input/state (actions :down)) 0)
-      (game/object/set (state :player) component/transform
-                       @{:position @{:y (- ((player-transform :position) :y) 0.1)}})))
+#      (game/object/set (state :player) component/transform
+#                       @{:position @{:y (- ((player-transform :position) :y) 0.1)}})))
+      (game/object/set (state :player) component/doll
+                       @{:blend_ratio (max (- (doll :blend_ratio) 0.1) 0.0)})))
   (if (> (input/state (actions :left)) 0)
     (game/object/set (state :player) component/transform
                      @{:position @{:x (+ ((player-transform :position) :x) 0.1)}})
