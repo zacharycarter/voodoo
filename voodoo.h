@@ -67,7 +67,7 @@ static const JanetReg vd__cfuns[] = {
     {"app/width", cfun_vd_app_width, "(voodoo/app/width)\n\nWidth of the current application."},
     {"app/height", cfun_vd_app_height, "(voodoo/app/height)\n\nHeight of the current application."},
     {"asset/load", cfun_vd_asset_load, "(voodoo/asset/load)\n\nLoad an asset."},
-    {"cam/orbit", cfun_vd_cam_orbit, "(voodoo/cam/orbit)\n\nCreate a new orbit camera."},
+    {"cam/orbit", cfun_vd_cam_orbit, "(voodoo/cam/orbit)\n\nCreate an orbit camera."},
     {"cam/handle-event", cfun_vd_cam_handle_event,
      "(voodoo/cam/handle-event)\n\nHandle an event with an existing camera."},
     {"cam/update", cfun_vd_cam_update, "(voodoo/cam/update)\n\nUpdate an existing camera."},
@@ -410,11 +410,10 @@ typedef struct
     HMM_Vec3 center;
 } vd__camera_desc;
 
-typedef struct
+/*typedef struct
 {
     float min_dist;
     float max_dist;
-
     float min_lat;
     float max_lat;
     float distance;
@@ -429,7 +428,7 @@ typedef struct
     HMM_Mat4 view;
     HMM_Mat4 proj;
     HMM_Mat4 view_proj;
-} vd__camera;
+} vd__camera;*/
 
 enum
 {
@@ -445,6 +444,7 @@ enum
     VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR =
         0x80 // Enable memory tracing on temp allocators, slows them down, but provides more insight on temp allocations
 };
+
 typedef uint32_t vd__core_flags;
 
 typedef struct
@@ -1060,6 +1060,96 @@ static int vd__vec3_get(void *ptr, Janet key, Janet *out)
 
 static const JanetAbstractType vd__vec3_at = {
     "voodoo/component/vec3", NULL, NULL, vd__vec3_get, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+
+ECS_STRUCT(vd__camera, {
+    float min_dist;
+    float max_dist;
+    float min_lat;
+    float max_lat;
+    float distance;
+    float latitude;
+    float longitude;
+    float aspect;
+    float nearz;
+    float farz;
+    vd__vec3 center;
+    vd__vec3 eye_pos;
+    vd__vec3 eye_dir;
+    ECS_PRIVATE
+    HMM_Mat4 view;
+    HMM_Mat4 proj;
+    HMM_Mat4 view_proj;
+});
+
+static int vd__camera_get(void *ptr, Janet key, Janet *out)
+{
+    vd__camera* c = ptr;
+    if (janet_keyeq(key, "min_dist"))
+    {
+        *out = janet_wrap_number(c->min_dist);
+        return 1;
+    }
+    if (janet_keyeq(key, "max_dist"))
+    {
+        *out = janet_wrap_number(c->min_dist);
+        return 1;
+    }
+    if (janet_keyeq(key, "distance"))
+    {
+        *out = janet_wrap_number(c->min_dist);
+        return 1;
+    }
+    if (janet_keyeq(key, "latitude"))
+    {
+        *out = janet_wrap_number(c->latitude);
+        return 1;
+    }
+    if (janet_keyeq(key, "longitude"))
+    {
+        *out = janet_wrap_number(c->longitude);
+        return 1;
+    }
+    if (janet_keyeq(key, "aspect"))
+    {
+        *out = janet_wrap_number(c->aspect);
+        return 1;
+    }
+    if (janet_keyeq(key, "nearz"))
+    {
+        *out = janet_wrap_number(c->nearz);
+        return 1;
+    }
+    if (janet_keyeq(key, "farz"))
+    {
+        *out = janet_wrap_number(c->farz);
+        return 1;
+    }
+    if (janet_keyeq(key, "center"))
+    {
+        vd__vec3 *p = janet_abstract(&vd__vec3_at, sizeof(vd__vec3));
+        *p = c->center;
+        *out = janet_wrap_abstract(p);
+        return 1;
+    }
+    if (janet_keyeq(key, "eye_pos"))
+    {
+        vd__vec3 *p = janet_abstract(&vd__vec3_at, sizeof(vd__vec3));
+        *p = c->eye_pos;
+        *out = janet_wrap_abstract(p);
+        return 1;
+    }
+    if (janet_keyeq(key, "eye_dir"))
+    {
+        vd__vec3 *p = janet_abstract(&vd__vec3_at, sizeof(vd__vec3));
+        *p = c->eye_dir;
+        *out = janet_wrap_abstract(p);
+        return 1;
+    }
+    return 0;
+}
+
+static const JanetAbstractType vd__camera_at = {
+    "voodoo/component/camera", NULL, NULL, vd__camera_get, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL};
 
 ECS_STRUCT(vd__quat, {
     float x;
@@ -2497,6 +2587,7 @@ static void vd__ecs_init()
     ECS_META_COMPONENT(vd__state.ecs.world, vd__vec3);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__quat);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__transform);
+    ECS_META_COMPONENT(vd__state.ecs.world, vd__camera);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__doll);
 }
 
@@ -3535,6 +3626,7 @@ EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
 
 static void vd__janet_cdefs(JanetTable *env)
 {
+    janet_def(env, "component/camera", janet_wrap_u64(ecs_id(vd__camera)), "(voodoo/component/camera)\nCamera component");
     janet_def(env, "component/doll", janet_wrap_u64(ecs_id(vd__doll)), "(voodoo/component/doll)\nDoll component");
     janet_def(env, "component/transform", janet_wrap_u64(ecs_id(vd__transform)),
               "(voodoo/component/transform)\nTransform component");
@@ -3636,37 +3728,9 @@ static void vd__script_shutdown(void)
 #define CAMERA_DEFAULT_NEARZ (0.01f)
 #define CAMERA_DEFAULT_FARZ (100.0f)
 
-ECS_COMPONENT_DECLARE(vd__camera);
-
 static float vd__cam_def(float val, float def)
 {
     return ((val == 0.0f) ? def : val);
-}
-
-static ecs_entity_t vd__cam_create(const vd__camera_desc *desc)
-{
-    assert(desc);
-
-    ecs_entity_t e = ecs_new_id(vd__state.ecs.world);
-    return ecs_set(vd__state.ecs.world, e, vd__camera,
-                   {
-                       vd__cam_def(desc->min_dist, CAMERA_DEFAULT_MIN_DIST),
-                       vd__cam_def(desc->max_dist, CAMERA_DEFAULT_MAX_DIST),
-                       vd__cam_def(desc->min_lat, CAMERA_DEFAULT_MIN_LAT),
-                       vd__cam_def(desc->max_lat, CAMERA_DEFAULT_MAX_LAT),
-                       vd__cam_def(desc->distance, CAMERA_DEFAULT_DIST),
-                       desc->latitude,
-                       desc->longitude,
-                       vd__cam_def(desc->aspect, CAMERA_DEFAULT_ASPECT),
-                       vd__cam_def(desc->nearz, CAMERA_DEFAULT_NEARZ),
-                       vd__cam_def(desc->farz, CAMERA_DEFAULT_FARZ),
-                       desc->center,
-                       HMM_V3(0.0, 0.0, 0.0),
-                       HMM_V3(0.0, 0.0, 0.0),
-                       HMM_M4D(1.0f),
-                       HMM_M4D(1.0f),
-                       HMM_M4D(1.0f),
-                   });
 }
 
 static void vd__cam_orbit(vd__camera *cam, float dx, float dy)
@@ -3697,29 +3761,25 @@ static HMM_Vec3 vd__cam_euclidean(float latitude, float longitude)
     return HMM_V3(cosf(lat) * sinf(lng), sinf(lat), cosf(lat) * cosf(lng));
 }
 
-static void vd__cam_update(ecs_entity_t e, float fb_width, float fb_height)
+static void vd__cam_update(vd__camera *cam, float fb_width, float fb_height)
 {
-    assert(e);
     assert((fb_width > 0) && (fb_height > 0));
     const float w = fb_width;
     const float h = fb_height;
-    vd__camera *cam = ecs_get_mut_id(vd__state.ecs.world, e, ecs_id(vd__camera));
-    cam->eye_pos = HMM_AddV3(cam->center, HMM_MulV3F(vd__cam_euclidean(cam->latitude, cam->longitude), cam->distance));
+    HMM_Vec3 eye_pos = HMM_AddV3(HMM_V3(cam->center.x, cam->center.y, cam->center.z), HMM_MulV3F(vd__cam_euclidean(cam->latitude, cam->longitude), cam->distance));
+    cam->eye_pos = (vd__vec3){eye_pos.X, eye_pos.Y, eye_pos.Z};
 
-    HMM_Vec3 d = HMM_SubV3(cam->center, cam->eye_pos);
+    HMM_Vec3 d = HMM_SubV3(HMM_V3(cam->center.x, cam->center.y, cam->center.z), HMM_V3(cam->eye_pos.x, cam->eye_pos.y, cam->eye_pos.z));
     d = HMM_NormV3(d);
-    cam->eye_dir = d;
+    cam->eye_dir = (vd__vec3){d.X, d.Y, d.Z};
 
-    cam->view = HMM_LookAt_RH(cam->eye_pos, cam->center, HMM_V3(0.0f, 1.0f, 0.0f));
+    cam->view = HMM_LookAt_RH(HMM_V3(cam->eye_pos.x, cam->eye_pos.y, cam->eye_pos.z), HMM_V3(cam->center.x, cam->center.y, cam->center.z), HMM_V3(0.0f, 1.0f, 0.0f));
     cam->proj = HMM_Perspective_RH_ZO(cam->aspect, w / h, cam->nearz, cam->farz);
     cam->view_proj = HMM_MulM4(cam->proj, cam->view);
 }
 
-static void vd__cam_handle_event(ecs_entity_t e, const sapp_event *ev)
+static vd__camera* vd__cam_handle_event(vd__camera *cam, const sapp_event *ev)
 {
-    assert(e);
-
-    vd__camera *cam = ecs_get_mut_id(vd__state.ecs.world, e, ecs_id(vd__camera));
     switch (ev->type)
     {
     case SAPP_EVENTTYPE_MOUSE_DOWN:
@@ -3746,11 +3806,7 @@ static void vd__cam_handle_event(ecs_entity_t e, const sapp_event *ev)
     default:
         break;
     }
-}
-
-static void vd__cam_init()
-{
-    ECS_COMPONENT_DEFINE(vd__state.ecs.world, vd__camera);
+    return cam;
 }
 
 static Janet cfun_vd_cam_handle_event(int32_t argc, Janet *argv)
@@ -3767,8 +3823,7 @@ static Janet cfun_vd_cam_handle_event(int32_t argc, Janet *argv)
         janet_panic("expected event");
     }
 
-    vd__cam_handle_event(janet_unwrap_u64(argv[0]), janet_unwrap_abstract(argv[1]));
-    return janet_wrap_nil();
+    return janet_wrap_abstract(vd__cam_handle_event(janet_unwrap_abstract(argv[0]), janet_unwrap_abstract(argv[1])));
 }
 
 static Janet cfun_vd_cam_update(int32_t argc, Janet *argv)
@@ -3791,15 +3846,39 @@ static Janet cfun_vd_cam_update(int32_t argc, Janet *argv)
         janet_panic("expected numbers for width and height");
     }
 
-    vd__cam_update(janet_getuinteger64(argv, 0), fb_width, fb_height);
+    vd__cam_update(janet_unwrap_abstract(argv[0]), fb_width, fb_height);
 
     return janet_wrap_nil();
+}
+
+static vd__camera vd__cam_create(const vd__camera_desc *desc)
+{
+    assert(desc);
+    return (vd__camera){
+                       vd__cam_def(desc->min_dist, CAMERA_DEFAULT_MIN_DIST),
+                       vd__cam_def(desc->max_dist, CAMERA_DEFAULT_MAX_DIST),
+                       vd__cam_def(desc->min_lat, CAMERA_DEFAULT_MIN_LAT),
+                       vd__cam_def(desc->max_lat, CAMERA_DEFAULT_MAX_LAT),
+                       vd__cam_def(desc->distance, CAMERA_DEFAULT_DIST),
+                       desc->latitude,
+                       desc->longitude,
+                       vd__cam_def(desc->aspect, CAMERA_DEFAULT_ASPECT),
+                       vd__cam_def(desc->nearz, CAMERA_DEFAULT_NEARZ),
+                       vd__cam_def(desc->farz, CAMERA_DEFAULT_FARZ),
+                       (vd__vec3){desc->center.X, desc->center.Y, desc->center.Z},
+                       (vd__vec3){0.0, 0.0, 0.0},
+                       (vd__vec3){0.0, 0.0, 0.0},
+                       HMM_M4D(1.0f),
+                       HMM_M4D(1.0f),
+                       HMM_M4D(1.0f),
+                   };
 }
 
 static Janet cfun_vd_cam_orbit(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 1);
     JanetTable *desc = janet_gettable(argv, 0);
+    vd__camera *camera = janet_abstract(&vd__camera_at, sizeof(vd__camera));
     vd__camera_desc cd = (vd__camera_desc){
         .min_dist = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("min-dist"))),
         .max_dist = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("max-dist"))),
@@ -3810,7 +3889,8 @@ static Janet cfun_vd_cam_orbit(int32_t argc, Janet *argv)
         .nearz = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("nearz"))),
         .farz = janet_unwrap_number(janet_table_get(desc, janet_ckeywordv("farz"))),
     };
-    return janet_wrap_u64(vd__cam_create(&cd));
+    *camera = (vd__camera)vd__cam_create(&cd);
+    return janet_wrap_abstract(camera);
 }
 
 //    ___  _______  __  _______  ___  ___  ___ _      __
@@ -3865,12 +3945,11 @@ void vd__dbg_draw_cube(HMM_Vec3 pos)
                                                             &transform, &vd__state.v3d.dbg.transform.offset);
 }
 
-void vd__dbg_draw_camera(ecs_entity_t e)
+void vd__dbg_draw_camera(vd__camera *cam)
 {
-    vd__camera *cam = ecs_get_mut_id(vd__state.ecs.world, e, ecs_id(vd__camera));
     vd__state.v3d.dbg.vp = cam->view_proj;
     vd__state.v3d.dbg.v = cam->view;
-    vd__state.v3d.dbg.eye_pos = cam->eye_pos;
+    vd__state.v3d.dbg.eye_pos = HMM_V3(cam->eye_pos.x, cam->eye_pos.y, cam->eye_pos.z);
 }
 
 void vd__dbg_draw()
@@ -3984,7 +4063,7 @@ static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 1);
 
-    vd__dbg_draw_camera(janet_getuinteger64(argv, 0));
+    vd__dbg_draw_camera(janet_unwrap_abstract(argv[0]));
     return janet_wrap_nil();
 }
 
@@ -4036,11 +4115,11 @@ static Janet cfun_vd_game_object_get(int32_t argc, Janet *argv)
     ecs_entity_t game_object_entity = janet_unwrap_u64(argv[0]);
     ecs_id_t component_id = janet_unwrap_u64(argv[1]);
     const ecs_type_info_t *component_type_info = ecs_get_type_info(vd__state.ecs.world, component_id);
-    if (component_type_info->component == ecs_id(vd__transform))
+    if (component_type_info->component == ecs_id(vd__camera))
     {
-        const vd__transform *transform = ecs_get_id(vd__state.ecs.world, game_object_entity, component_id);
-        vd__transform *res = janet_abstract(&vd__transform_at, component_type_info->size);
-        *res = *transform;
+        const vd__camera *cam = ecs_get_id(vd__state.ecs.world, game_object_entity, component_id);
+        vd__camera *res = janet_abstract(&vd__camera_at, component_type_info->size);
+        *res = *cam;
         return janet_wrap_abstract(res);
     }
     if (component_type_info->component == ecs_id(vd__doll))
@@ -4048,6 +4127,13 @@ static Janet cfun_vd_game_object_get(int32_t argc, Janet *argv)
         const vd__doll *doll = ecs_get_id(vd__state.ecs.world, game_object_entity, component_id);
         vd__doll *res = janet_abstract(&vd__doll_at, component_type_info->size);
         *res = *doll;
+        return janet_wrap_abstract(res);
+    }
+    if (component_type_info->component == ecs_id(vd__transform))
+    {
+        const vd__transform *transform = ecs_get_id(vd__state.ecs.world, game_object_entity, component_id);
+        vd__transform *res = janet_abstract(&vd__transform_at, component_type_info->size);
+        *res = *transform;
         return janet_wrap_abstract(res);
     }
     return janet_wrap_nil();
@@ -4059,9 +4145,6 @@ static Janet cfun_vd_game_object_set(int32_t argc, Janet *argv)
     ecs_entity_t game_object_entity = janet_unwrap_u64(argv[0]);
     ecs_id_t component_id = janet_unwrap_u64(argv[1]);
     const ecs_type_info_t *component_type_info = ecs_get_type_info(vd__state.ecs.world, component_id);
-
-    printf("second argument is pointer: %s\n", janet_checktype(argv[2], JANET_POINTER) ? "true" : "false");
-    printf("second argument is abstract: %s\n", janet_checktype(argv[2], JANET_ABSTRACT) ? "true" : "false");
 
     if (janet_checktype(argv[2], JANET_ABSTRACT))
     {
@@ -4683,7 +4766,7 @@ static void vd__v3d_render(vd__camera *cam)
     sg_apply_pipeline(vd__state.v3d.fwd.display.pip);
 
     vd__state.v3d.fwd.display_uniforms.fs.light_dir = HMM_NormV3(light_pos);
-    vd__state.v3d.fwd.display_uniforms.fs.eye_pos = cam->eye_pos;
+    vd__state.v3d.fwd.display_uniforms.fs.eye_pos = HMM_V3(cam->eye_pos.x, cam->eye_pos.y, cam->eye_pos.z);
     sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_vd_v3d_display_fs_uniforms,
                       &SG_RANGE(vd__state.v3d.fwd.display_uniforms.fs));
 
@@ -4719,7 +4802,7 @@ static void vd__v3d_render(vd__camera *cam)
     sg_apply_pipeline(vd__state.v3d.fwd.display.pip_2);
 
     vd__state.v3d.fwd.doll_uniforms.fs.light_dir = HMM_NormV3(light_pos);
-    vd__state.v3d.fwd.doll_uniforms.fs.eye_pos = cam->eye_pos;
+    vd__state.v3d.fwd.doll_uniforms.fs.eye_pos = HMM_V3(cam->eye_pos.x, cam->eye_pos.y, cam->eye_pos.z);
 
     sg_apply_uniforms(SG_SHADERSTAGE_FS, SLOT_vd_v3d_doll_fs_uniforms, &SG_RANGE(vd__state.v3d.fwd.doll_uniforms.fs));
 
@@ -4835,7 +4918,7 @@ static Janet cfun_vd_v3d_doll(int32_t argc, Janet *argv)
 static Janet cfun_vd_v3d_draw(int32_t argc, Janet *argv)
 {
     janet_fixarity(argc, 1);
-    vd__v3d_render(ecs_get_mut_id(vd__state.ecs.world, janet_getuinteger64(argv, 0), ecs_id(vd__camera)));
+    vd__v3d_render(janet_unwrap_abstract(argv[0]));
     return janet_wrap_nil();
 }
 
@@ -4889,7 +4972,6 @@ void vd__app_init()
     vd__asset_init();
     vd__script_init("game");
     vd__gfx_init();
-    vd__cam_init();
     vd__v3d_init();
     vd__dbg_draw_init();
     vd__input_init();

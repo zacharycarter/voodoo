@@ -15,7 +15,8 @@
 
 (defn init []
   (set (state :doll-asset) (asset/load "doll" "assets/dolls/character.doll"))
-  (set (state :camera) (cam/orbit @{:min-dist 1.0
+  (set (state :camera) (game/object @[0.0 0.0 0.0] @[0.0 0.0 0.0] @[0.0 0.0 0.0 0.0]))
+  (game/object/set (state :camera) component/camera (cam/orbit @{:min-dist 1.0
                                     :max-dist 50.0
                                     :center @[0.0 0.0 0.0]
                                     :distance 5.0
@@ -35,7 +36,11 @@
       (input/bind input/layer/user (get binding 1) action))))
 
 (defn event [e]
-  (cam/handle-event (state :camera) e))
+  (def camera
+    (game/object/get
+      (state :camera)
+      component/camera))
+  (game/object/set (state :camera) component/camera (cam/handle-event camera e)))
 
 (defn update-doll []
   (def player-transform
@@ -65,11 +70,15 @@
                        @{:position @{:x (- ((player-transform :position) :x) 0.1)}}))))
 
 (defn update []
+  (def camera
+    (game/object/get
+      (state :camera)
+      component/camera))
   (update-doll)
-  (cam/update (state :camera))
-  (dbg/draw/camera (state :camera))
+  (cam/update camera)
+  (dbg/draw/camera camera)
   (dbg/draw/grid 0)
-  (v3d/draw (state :camera)))
+  (v3d/draw camera))
 
 (defn shutdown [])
 
