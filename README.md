@@ -20,7 +20,8 @@ voodoo is very much WIP.
 
 ## [Example Usage](https://github.com/zacharycarter/voodoo/blob/master/assets/scripts/game.janet)
 
-```janet(def actions {:up 0
+```janet
+(def actions {:up 0
               :down 1
               :left 2
               :right 3
@@ -37,7 +38,8 @@ voodoo is very much WIP.
 
 (defn init []
   (set (state :doll-asset) (asset/load "doll" "assets/dolls/character.doll"))
-  (set (state :camera) (cam/orbit @{:min-dist 1.0
+  (set (state :camera) (game/object @[0.0 0.0 0.0] @[0.0 0.0 0.0] @[0.0 0.0 0.0 0.0]))
+  (game/object/set (state :camera) component/camera (cam/orbit @{:min-dist 1.0
                                     :max-dist 50.0
                                     :center @[0.0 0.0 0.0]
                                     :distance 5.0
@@ -57,7 +59,11 @@ voodoo is very much WIP.
       (input/bind input/layer/user (get binding 1) action))))
 
 (defn event [e]
-  (cam/handle-event (state :camera) e))
+  (def camera
+    (game/object/get
+      (state :camera)
+      component/camera))
+  (game/object/set (state :camera) component/camera (cam/handle-event camera e)))
 
 (defn update-doll []
   (def player-transform
@@ -70,13 +76,9 @@ voodoo is very much WIP.
       component/doll))
 
   (if (> (input/state (actions :up)) 0)
-#    (game/object/set (state :player) component/transform
-#                     @{:position @{:y (+ ((player-transform :position) :y) 0.1)}})
     (game/object/set (state :player) component/doll
                      @{:blend_ratio (min (+ (doll :blend_ratio) 0.1) 1.0)})
     (if (> (input/state (actions :down)) 0)
-#      (game/object/set (state :player) component/transform
-#                       @{:position @{:y (- ((player-transform :position) :y) 0.1)}})))
       (game/object/set (state :player) component/doll
                        @{:blend_ratio (max (- (doll :blend_ratio) 0.1) 0.0)})))
   (if (> (input/state (actions :left)) 0)
@@ -87,13 +89,25 @@ voodoo is very much WIP.
                        @{:position @{:x (- ((player-transform :position) :x) 0.1)}}))))
 
 (defn update []
+  (def camera
+    (game/object/get
+      (state :camera)
+      component/camera))
   (update-doll)
-  (cam/update (state :camera))
-  (dbg/draw/camera (state :camera))
+  (cam/update camera)
+  (dbg/draw/camera camera)
   (dbg/draw/grid 0)
-  (v3d/draw (state :camera)))
+  (v3d/draw camera))
 
 (defn shutdown [])
+
+(defn voodoo []
+  @{:width 960
+    :height 540
+    :init init
+    :event event
+    :update update
+    :shutdown shutdown})
 ```
 
 ## Roadmap
