@@ -69,3 +69,17 @@ code {
   white-space: pre;
   font-family: var(--monospace-family);
 }
+
+.main-page {
+  display: flex;
+  flex-direction: column;
+}
+
+.voodoo {
+  height: 100%;
+  overflow: hidden;
+}
+
+.voodoo > * {
+  overflow: hidden;
+}

@@ -184,15 +184,6 @@ const Module = {
           keymap.of(keyBindings),
           EditorView.updateListener.of(function (viewUpdate) {
             if (viewUpdate.docChanged) {
-              Module.set_signal(Module.signals.scriptDirty, true);
-              Module.FS.writeFile(
-                "/voodoo/game.janet",
-                viewUpdate.state.doc.toString(),
-                { encoding: "utf8" }
-              );
-              Module.FS.syncfs(true, function (err) {
-                if (!!err) console.error(err);
-              });
             }
           }),
           dracula,
@@ -209,6 +200,36 @@ Voodoo(Module).then((VD) => {
   const isTryingToEngageNumberDrag = () => {
     return performance.now() - ctrlClickedAt < 100;
   };
+
+  parent.addEventListener("keydown", (e) => {
+    if (e.key === 'Enter' && e.shiftKey) {
+      const doc = VD.editor.state.doc.toString();
+      Module.FS.writeFile(
+        "/voodoo/game.janet",
+        doc,
+        { encoding: "utf8" }
+      );
+      Module.FS.syncfs(true, function (err) {
+        if (!!err) console.error(err);
+      });
+
+      const script = VD.stringToNewUTF8(doc);
+
+      const result = VD._vd__script_evaluate(script);
+
+      if (!result)
+      {
+          // Signal.set(evaluationState, EvaluationState.EvaluationError);
+          console.error("failed evaluation");
+      }
+      else
+      {
+          console.log("successfully evaluated script!");
+      }
+
+      e.preventDefault();
+    }
+  });
 
   parent.addEventListener("pointerdown", (e) => {
     if ((e.buttons === 1 || e.buttons === 2) && e.ctrlKey) {

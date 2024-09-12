@@ -137,12 +137,9 @@ void ozz_load_skeleton(ozz_instance_t* ozz, const void* data, size_t num_bytes) 
         self->skel_loaded = true;
         const int num_soa_joints = self->skel.num_soa_joints();
         const int num_joints = self->skel.num_joints();
-        printf("num joints in skeleton: %d\n", num_joints);
         self->model_matrices.resize(num_joints);
-        printf("successfully loaded skeleton!\n");
     }
     else {
-        printf("loading skeleton failed!\n");
         self->load_failed = true;
     }
 }

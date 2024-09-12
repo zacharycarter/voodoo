@@ -230,6 +230,7 @@ extern "C"
 #define HMM_ABS(a) ((a) > 0 ? (a) : -(a))
 #define HMM_MOD(a, m) (((a) % (m)) >= 0 ? ((a) % (m)) : (((a) % (m)) + (m)))
 #define HMM_SQUARE(x) ((x) * (x))
+#define HMM_MAD(a, b, c) a * b + c
 
 typedef union HMM_Vec2
 {
@@ -260,6 +261,12 @@ typedef union HMM_Vec2
     inline const float& operator[](int Index) const { return Elements[Index]; }
 #endif
 } HMM_Vec2;
+
+ECS_STRUCT(vd__vec3, {
+    float x;
+    float y;
+    float z;
+});
 
 typedef union HMM_Vec3
 {
@@ -301,6 +308,8 @@ typedef union HMM_Vec3
         float _Ignored3;
         HMM_Vec2 VW;
     };
+
+    vd__vec3 xyz;
 
     float Elements[3];
 
@@ -409,6 +418,13 @@ typedef union HMM_Mat4
 #endif
 } HMM_Mat4;
 
+ECS_STRUCT(vd__quat, {
+    float x;
+    float y;
+    float z;
+    float w;
+});
+
 typedef union HMM_Quat
 {
     struct
@@ -424,6 +440,8 @@ typedef union HMM_Quat
 
         float W;
     };
+
+    vd__quat xyzw;
 
     float Elements[4];
 
@@ -1068,7 +1086,8 @@ COVERAGE(HMM_NormV3, 1)
 static inline HMM_Vec3 HMM_NormV3(HMM_Vec3 A)
 {
     ASSERT_COVERED(HMM_NormV3);
-    return HMM_MulV3F(A, HMM_InvSqrtF(HMM_DotV3(A, A)));
+    float dot = HMM_DotV3(A, A);
+    return dot ? HMM_MulV3F(A, HMM_InvSqrtF(dot)) : A;
 }
 
 COVERAGE(HMM_NormV4, 1)
@@ -2115,6 +2134,58 @@ static inline HMM_Quat HMM_Q(float X, float Y, float Z, float W)
     return Result;
 }
 
+static inline HMM_Quat HMM_QV3(HMM_Vec3 pyr_degrees)
+{
+
+    HMM_Quat Result;
+
+    /* float s1 = sin(HMM_AngleDeg(angles.Y)*0.5f); */
+    /* float c1 = cos(HMM_AngleDeg(angles.Y)*0.5f); */
+    /* float s2 = sin(HMM_AngleDeg(angles.X)*0.5f); */
+    /* float c2 = cos(HMM_AngleDeg(angles.X)*0.5f); */
+    /* float s3 = sin(HMM_AngleDeg(angles.Z)*0.5f); */
+    /* float c3 = cos(HMM_AngleDeg(angles.Z)*0.5f); */
+
+    /* float W = (float)(s1 * s2 * s3 + c1 * c2 * c3); */
+    /* float X = (float)(s1 * s3 * c2 + s2 * c1 * c3); */
+    /* float Y = (float)(-s1 * c2 * c3 - s2 * s3 * c1); */
+    /* float Z = (float)(s1 * s2 * c3 + s3 * c1 * c2); */
+
+
+    float p = HMM_AngleDeg(pyr_degrees.X), y = HMM_AngleDeg(pyr_degrees.Y), r = HMM_AngleDeg(pyr_degrees.Z);
+    float ha = p * 0.5f, hb = r * 0.5f, hc = y * 0.5f;
+    float cp = cosf(ha), sp = sinf(ha), cr = cosf(hb), sr = sinf(hb), cy = cosf(hc), sy = sinf(hc);
+    // float X = cy*cr*cp + sy*sr*sp, Y = cy*sr*cp - sy*cr*sp, Z = cy*cr*sp + sy*sr*cp, W = sy*cr*cp - cy*sr*sp;
+    float X = sp*cy*cr - cp*sy*sr, Y = cp*sy*cr + sp*cy*sr, Z = cp*cy*sr - sp*sy*cr, W = cp*cy*cr + sp*sy*sr;
+
+    /* float c1 = HMM_CosF(HMM_AngleDeg(pyr_degrees.Y)/2); */
+    /* float s1 = HMM_SinF(HMM_AngleDeg(pyr_degrees.Y)/2); */
+    /* float c2 = HMM_CosF(HMM_AngleDeg(pyr_degrees.X)/2); */
+    /* float s2 = HMM_SinF(HMM_AngleDeg(pyr_degrees.X)/2); */
+    /* float c3 = HMM_CosF(HMM_AngleDeg(pyr_degrees.Z)/2); */
+    /* float s3 = HMM_SinF(HMM_AngleDeg(pyr_degrees.Z)/2); */
+    /* float c1c2 = c1*c2; */
+    /* float s1s2 = s1*s2; */
+    /* float W =c1c2*c3 - s1s2*s3; */
+  	/* float X =c1c2*s3 + s1s2*c3; */
+	/* float Y =s1*c2*c3 + c1*s2*s3; */
+	/* float Z =c1*s2*c3 - s1*c2*s3; */
+
+#ifdef HANDMADE_MATH__USE_SSE
+    Result.SSE = _mm_setr_ps(X, Y, Z, W);
+#elif defined(HANDMADE_MATH__USE_NEON)
+    float32x4_t v = { X, Y, Z, W };
+    Result.NEON = v;
+#else
+    Result.X = X;
+    Result.Y = Y;
+    Result.Z = Z;
+    Result.W = W;
+#endif
+
+    return Result;
+}
+
 COVERAGE(HMM_QV4, 1)
 static inline HMM_Quat HMM_QV4(HMM_Vec4 Vector)
 {
@@ -2609,6 +2680,58 @@ static inline HMM_Vec2 HMM_RotateV2(HMM_Vec2 V, float Angle)
     float cosA = HMM_CosF(Angle);
 
     return HMM_V2(V.X * cosA - V.Y * sinA, V.X * sinA + V.Y * cosA);
+}
+
+static inline float sx_sign(float _a)
+{
+    return _a < 0.0f ? -1.0f : 1.0f;
+}
+
+static inline float HMM_Atan2(float _y, float _x)
+{
+    static const float kAtan2C0 = -0.013480470f;
+    static const float kAtan2C1 = 0.057477314f;
+    static const float kAtan2C2 = -0.121239071f;
+    static const float kAtan2C3 = 0.195635925f;
+    static const float kAtan2C4 = -0.332994597f;
+    static const float kAtan2C5 = 0.999995630f;
+
+    const float ax = HMM_ABS(_x);
+    const float ay = HMM_ABS(_y);
+    const float maxaxy = HMM_MAX(ax, ay);
+    const float minaxy = HMM_MIN(ax, ay);
+
+    if (maxaxy == 0.0f) {
+        return 0.0f * sx_sign(_y);
+    }
+
+    const float mxy = minaxy / maxaxy;
+    const float mxysq = HMM_SQUARE(mxy);
+    const float tmp0 = HMM_MAD(kAtan2C0, mxysq, kAtan2C1);
+    const float tmp1 = HMM_MAD(tmp0, mxysq, kAtan2C2);
+    const float tmp2 = HMM_MAD(tmp1, mxysq, kAtan2C3);
+    const float tmp3 = HMM_MAD(tmp2, mxysq, kAtan2C4);
+    const float tmp4 = HMM_MAD(tmp3, mxysq, kAtan2C5);
+    const float tmp5 = tmp4 * mxy;
+    const float tmp6 = ay > ax ? (HMM_PI / 2) - tmp5 : tmp5;
+    const float tmp7 = _x < 0.0f ? HMM_PI - tmp6 : tmp6;
+    const float result = sx_sign(_y) * tmp7;
+
+    return result;
+}
+
+static inline HMM_Vec3 HMM_QToV3(HMM_Quat Q)
+{
+    float sr_cp = 2 * (Q.W * Q.X + Q.Y * Q.Z);
+    float cr_cp = 1 - 2 * (Q.X * Q.X + Q.Y * Q.Y);
+
+    float sp = HMM_SqrtF(1 + 2 * (Q.W * Q.Y - Q.X * Q.Z));
+    float cp = HMM_SqrtF(1 - 2 * (Q.W * Q.Y - Q.X * Q.Z));
+
+    float sy_cp = 2 * (Q.W * Q.Z + Q.X * Q.Y);
+    float cy_cp = 1 - 2 * (Q.Y * Q.Y + Q.Z * Q.Z);
+
+    return HMM_V3(2 * HMM_Atan2(sp, cp) - HMM_PI / 2, HMM_Atan2(sy_cp, cy_cp), HMM_Atan2(sr_cp, cr_cp));
 }
 
 // implementation from
