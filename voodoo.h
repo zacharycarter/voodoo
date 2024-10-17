@@ -33,6 +33,7 @@
 
 */
 #define VOODOO_INCLUDED (1)
+#include <dirent.h>
 
 #include "janet.h"
 
@@ -55,6 +56,8 @@ static Janet cfun_vd_dbg_draw_grid(int32_t argc, Janet *argv);
 static Janet cfun_vd_game_object(int32_t argc, Janet *argv);
 static Janet cfun_vd_game_object_get(int32_t argc, Janet *argv);
 static Janet cfun_vd_game_object_set(int32_t argc, Janet *argv);
+
+static Janet cfun_vd_gfx_img_get(int32_t argc, Janet *argv);
 
 static Janet cfun_vd_input_bind(int32_t argc, Janet *argv);
 static Janet cfun_vd_input_state(int32_t argc, Janet *argv);
@@ -97,6 +100,7 @@ static const JanetReg vd__cfuns[] = {
      "(voodoo/game/object/get)\n\nGets the value of a component for an existing game object."},
     {"game/object/set", cfun_vd_game_object_set,
      "(voodoo/game/object/set)\n\nSets the value of a component for an existing game object."},
+    {"gfx/img/get", cfun_vd_gfx_img_get, "(voodoo/gfx/img/get)\n\nRetrieves image data using asset handle."},
     {"input/bind", cfun_vd_input_bind, "(voodoo/input/bind)\n\nBind an action to an input."},
     {"input/state", cfun_vd_input_state, "(voodoo/input/state)\n\nGet the state of an input."},
     {"math/add-v3", cfun_vd_math_add_v3, "(voodoo/math/add-v3\n\nAdd two 3d vectors together.)"},
@@ -186,6 +190,7 @@ static const JanetReg vd__cfuns[] = {
 #include "sokol_shape.h"
 #include "sokol_time.h"
 
+// shaders
 #include "depth.glsl.h"
 #include "display.glsl.h"
 #include "doll.glsl.h"
@@ -506,6 +511,49 @@ typedef struct
     HMM_Vec3 pos;
     sshape_element_range_t draw;
 } vd__dbg_shape;
+
+typedef struct
+{
+    union {
+        int x, w;
+    };
+    union {
+        int y, h;
+    };
+    union {
+        int n, comps;
+    };
+    union {
+        void *pixels;
+        uint8_t *pixels8;
+        uint16_t *pixels16;
+        uint32_t *pixels32;
+        float *pixelsf;
+    };
+} vd__image;
+
+typedef struct
+{
+    uint32_t name_hdl; // get name with the_core->str_cstr();
+    sg_image_type type;
+    sg_pixel_format format;
+    int mem_size_bytes;
+    int width;
+    int height;
+    union {
+        int depth;
+        int layers;
+    };
+    int mips;
+    int bpp;
+} vd__texture_info;
+
+typedef struct
+{
+    sg_image img;
+    sg_sampler smp;
+    vd__texture_info info;
+} vd__texture;
 
 typedef enum
 {
@@ -951,12 +999,27 @@ static struct
 
         sx_mutex tmp_allocs_mtx;
         vd__tmp_alloc_tls **SX_ARRAY tmp_allocs;
+
+        sx_strpool *strpool;
     } core;
 
     struct
     {
         ecs_world_t *world;
     } ecs;
+
+    struct
+    {
+        sx_alloc *alloc;
+
+        vd__texture white_tex;
+        vd__texture black_tex;
+        vd__texture checker_tex;
+        sg_filter default_min_filter;
+        sg_filter default_mag_filter;
+        int default_aniso;
+        int default_first_mip;
+    } gfx;
 
     struct
     {
@@ -985,6 +1048,11 @@ static struct
         vd__mem_capture_context capture;
         sx_atomic_uint32 in_capture;
     } mem;
+
+    struct
+    {
+        bool evaluation_err;
+    } script;
 
     struct
     {
@@ -1487,6 +1555,8 @@ static Janet cfun_vd_math_to_rad(int32_t argc, Janet *argv)
 // /_/  /_/___/_/  /_/\____/_/|_| /_/
 //
 // >>memory
+
+#define vd__with_temp_alloc(_name) sx_with(const sx_alloc *_name = vd__tmp_alloc_push(), vd__tmp_alloc_pop())
 
 #define vd__mem_trace_context_mutex_enter(opts, mtx)                                                                   \
     if (opts & VD__MEMOPTION_MULTITHREAD)                                                                              \
@@ -2036,6 +2106,52 @@ static void vd__vfs_update();
 
 static _Thread_local vd__tmp_alloc_tls tl_tmp_alloc;
 
+static void *vd__tmp_alloc_debug_cb(void *ptr, size_t size, uint32_t align, const char *file, const char *func,
+                                    uint32_t line, void *user_data)
+{
+    vd__tmp_alloc_heapmode_inst *inst = user_data;
+
+    // no free function
+    if (!size)
+    {
+        return NULL;
+    }
+
+    align = align < SX_CONFIG_ALLOCATOR_NATURAL_ALIGNMENT ? SX_CONFIG_ALLOCATOR_NATURAL_ALIGNMENT : align;
+    size_t aligned_size = sx_align_mask(size, align - 1);
+    vd__tmp_alloc_heapmode *owner = inst->owner;
+
+    if ((owner->offset + aligned_size) > owner->max_size)
+    {
+        sx_out_of_memory();
+        return NULL;
+    }
+
+    if (ptr)
+    {
+        ptr = sx__realloc(vd__state.core.heap_alloc, ptr, size, align, file, func, line);
+    }
+    else
+    {
+        ptr = sx__malloc(vd__state.core.heap_alloc, size, align, file, func, line);
+    }
+
+    if (ptr)
+    {
+        vd__tmp_alloc_heapmode_item item = {.ptr = ptr, .line = line, .size = aligned_size};
+        if (file)
+        {
+            sx_os_path_basename(item.file, sizeof(item.file), file);
+        }
+        owner->offset += aligned_size;
+        owner->frame_peak = sx_max(owner->frame_peak, owner->offset);
+        owner->peak = sx_max(owner->peak, owner->offset);
+        sx_array_push(vd__state.core.alloc, owner->items, item);
+    }
+
+    return ptr;
+}
+
 static void *vd__core_tmp_alloc_stub_cb(void *ptr, size_t size, uint32_t align, const char *file, const char *func,
                                         uint32_t line, void *user_data)
 {
@@ -2053,6 +2169,113 @@ static void *vd__core_tmp_alloc_stub_cb(void *ptr, size_t size, uint32_t align, 
         vd__tmp_alloc *talloc = &tmpalloc->alloc;
         vd__tmp_alloc_inst *inst = &talloc->alloc_stack[sx_array_count(talloc->alloc_stack) - 1];
         return inst->alloc.alloc_cb(ptr, size, align, file, func, line, inst->alloc.user_data);
+    }
+}
+
+static void *vd__tmp_alloc_cb(void *ptr, size_t size, uint32_t align, const char *file, const char *func, uint32_t line,
+                              void *user_data)
+{
+    sx_unused(file);
+    sx_unused(line);
+    sx_unused(func);
+
+    vd__tmp_alloc_inst *inst = user_data;
+
+    // we have no free function
+    if (!size)
+    {
+        return NULL;
+    }
+
+    align = align < SX_CONFIG_ALLOCATOR_NATURAL_ALIGNMENT ? SX_CONFIG_ALLOCATOR_NATURAL_ALIGNMENT : align;
+    size_t aligned_size = sx_align_mask(size, align - 1);
+
+    // decide with side to allocate:
+    //  - correct stack-mode allocations start from the end of the buffer
+    //  - in case there is collapsing allocators (tmpalloc from lower stack level needs to allocate)
+    //    then start from the begining of the buffer
+    bool alloc_from_start = (inst->depth < inst->owner->stack_depth);
+    uint8_t *buff = (uint8_t *)inst->owner->vmem.ptr;
+    size_t buff_size = (size_t)inst->owner->vmem.page_size * (size_t)inst->owner->vmem.max_pages;
+
+    if (!alloc_from_start)
+    {
+        size_t end_offset = inst->end_offset + aligned_size;
+        if (end_offset % align != 0)
+        {
+            sx_align_mask(end_offset, align - 1);
+        }
+
+        void *new_ptr = buff + buff_size - end_offset;
+        *((size_t *)new_ptr - 1) = size;
+        inst->end_offset = end_offset + sizeof(size_t);
+
+        if (inst->end_offset > buff_size || (buff_size - inst->end_offset) < inst->start_offset)
+        {
+            sx_out_of_memory();
+            return NULL;
+        }
+
+        if (ptr)
+        {
+            size_t old_size = *((size_t *)ptr - 1);
+            sx_memmove(new_ptr, ptr, sx_min(old_size, size));
+        }
+
+        size_t total = inst->start_offset + inst->end_offset;
+        inst->owner->peak = sx_max(inst->owner->peak, total);
+        inst->owner->frame_peak = sx_max(inst->owner->frame_peak, total);
+
+        return new_ptr;
+    }
+    else
+    {
+        void *lastptr = buff + inst->start_lastptr_offset;
+        // get the end_offset from the current depth allocator instead of self
+        size_t end_offset = inst->owner->alloc_stack[inst->owner->stack_depth - 1].end_offset;
+
+        // if we are realloc on the same pointer, just re-adjust the offset
+        if (ptr == lastptr)
+        {
+            size_t lastsize = *((size_t *)ptr - 1);
+            lastsize = sx_align_mask(lastsize, align - 1);
+            inst->start_offset += (aligned_size > lastsize) ? (aligned_size - lastsize) : 0;
+            if (inst->start_offset > (buff_size - end_offset))
+            {
+                sx_out_of_memory();
+                return NULL;
+            }
+            *((size_t *)ptr - 1) = size;
+
+            size_t total = inst->start_offset + end_offset;
+            inst->owner->peak = sx_max(inst->owner->peak, total);
+            inst->owner->frame_peak = sx_max(inst->owner->frame_peak, total);
+            return ptr;
+        }
+        else
+        {
+            size_t start_offset = inst->start_offset + sizeof(size_t);
+            if (start_offset % align != 0)
+            {
+                sx_align_mask(start_offset, align - 1);
+            }
+
+            if ((start_offset + aligned_size) > (buff_size - end_offset))
+            {
+                sx_out_of_memory();
+                return NULL;
+            }
+
+            void *new_ptr = buff + start_offset;
+            *((size_t *)new_ptr - 1) = size;
+            inst->start_offset = start_offset + aligned_size;
+            inst->start_lastptr_offset = start_offset;
+
+            size_t total = inst->start_offset + end_offset;
+            inst->owner->peak = sx_max(inst->owner->peak, total);
+            inst->owner->frame_peak = sx_max(inst->owner->frame_peak, total);
+            return new_ptr;
+        }
     }
 }
 
@@ -2132,6 +2355,141 @@ static void vd__core_release_tmp_alloc_tls(vd__tmp_alloc_tls *tmpalloc)
     }
 
     tmpalloc->init = false;
+}
+
+static const sx_alloc *vd__tmp_alloc_push_trace(const char *file, uint32_t line)
+{
+    vd__tmp_alloc_tls *tmpalloc = &tl_tmp_alloc;
+    if (!tmpalloc->init)
+    {
+        bool r = vd__core_init_tmp_alloc_tls(tmpalloc);
+        sx_assert(r);
+        if (!r)
+        {
+            return NULL;
+        }
+
+        sx_mutex_lock(vd__state.core.tmp_allocs_mtx)
+        {
+            sx_array_push(vd__state.core.alloc, vd__state.core.tmp_allocs, tmpalloc);
+        }
+    }
+    tmpalloc->idle_tm = 0;
+
+    if (!(vd__state.core.flags & VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR))
+    {
+        vd__tmp_alloc *talloc = &tmpalloc->alloc;
+        int count = sx_array_count(talloc->alloc_stack);
+        if (count == 0)
+        {
+            vd__tmp_alloc_inst inst = {.alloc =
+                                           {
+                                               .alloc_cb = vd__tmp_alloc_cb,
+                                           },
+                                       .depth = (uint32_t)count + 1,
+                                       .owner = talloc,
+                                       .file = file,
+                                       .line = line};
+
+            sx_array_push(vd__state.core.alloc, talloc->alloc_stack, inst);
+        }
+        else
+        {
+            vd__tmp_alloc_inst inst = sx_array_last(talloc->alloc_stack);
+            ++inst.depth;
+            inst.file = file;
+            inst.line = line;
+            sx_array_push(vd__state.core.alloc, talloc->alloc_stack, inst);
+        }
+
+        sx_atomic_fetch_add32(&talloc->stack_depth, 1);
+        vd__tmp_alloc_inst *_inst = &talloc->alloc_stack[count];
+        _inst->alloc.user_data = _inst;
+        return !(vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR) ? &_inst->alloc : tmpalloc->tracer_front;
+    }
+    else
+    {
+        vd__tmp_alloc_heapmode *talloc = &tmpalloc->heap_alloc;
+
+        int count = sx_array_count(talloc->alloc_stack);
+        int item_idx = sx_array_count(talloc->items);
+        if (count == 0)
+        {
+            vd__tmp_alloc_heapmode_inst inst = {.alloc = {.alloc_cb = vd__tmp_alloc_debug_cb},
+                                                .owner = talloc,
+                                                .item_idx = item_idx,
+                                                .file = file,
+                                                .line = line};
+            sx_array_push(vd__state.core.alloc, talloc->alloc_stack, inst);
+        }
+        else
+        {
+            vd__tmp_alloc_heapmode_inst inst = sx_array_last(talloc->alloc_stack);
+            inst.item_idx = item_idx;
+            inst.file = file;
+            inst.line = line;
+            sx_array_push(vd__state.core.alloc, talloc->alloc_stack, inst);
+        }
+
+        sx_atomic_fetch_add32(&talloc->stack_depth, 1);
+        vd__tmp_alloc_heapmode_inst *_inst = &talloc->alloc_stack[count];
+        _inst->alloc.user_data = _inst;
+        return !(vd__state.core.flags & VD__CORE_FLAG_TRACE_TEMP_ALLOCATOR) ? &_inst->alloc : tmpalloc->tracer_front;
+    }
+}
+
+static const sx_alloc *vd__tmp_alloc_push(void)
+{
+    return vd__tmp_alloc_push_trace(NULL, 0);
+}
+
+static void vd__tmp_alloc_pop(void)
+{
+    sx_assert(tl_tmp_alloc.init);
+
+    tl_tmp_alloc.idle_tm = 0;
+    if (!(vd__state.core.flags & VD__CORE_FLAG_HEAP_TEMP_ALLOCATOR))
+    {
+        vd__tmp_alloc *talloc = &tl_tmp_alloc.alloc;
+        if (sx_array_count(talloc->alloc_stack))
+        {
+            sx_array_pop_last(talloc->alloc_stack);
+            sx_assert(talloc->stack_depth > 0);
+            sx_atomic_fetch_sub32(&talloc->stack_depth, 1);
+        }
+        else
+        {
+            sx_assertf(0, "no matching tmp_alloc_push for the call tmp_alloc_pop");
+        }
+    }
+    else
+    {
+        vd__tmp_alloc_heapmode *talloc = &tl_tmp_alloc.heap_alloc;
+        if (sx_array_count(talloc->alloc_stack))
+        {
+            vd__tmp_alloc_heapmode_inst inst = sx_array_last(talloc->alloc_stack);
+            // free all allocated items from item_idx to the last one
+            int count = sx_array_count(talloc->items);
+            for (int i = inst.item_idx; i < count; i++)
+            {
+                sx_free(vd__state.core.heap_alloc, talloc->items[i].ptr);
+                talloc->offset -= talloc->items[i].size;
+            }
+
+            if (talloc->items)
+            {
+                sx_array_pop_lastn(talloc->items, (count - inst.item_idx));
+            }
+
+            sx_array_pop_last(talloc->alloc_stack);
+            sx_assert(talloc->stack_depth > 0);
+            sx_atomic_fetch_sub32(&talloc->stack_depth, 1);
+        }
+        else
+        {
+            sx_assertf(0, "no matching tmp_alloc_push for the call tmp_alloc_pop");
+        }
+    }
 }
 
 static sx_job_t vd__core_job_dispatch(int count, void (*callback)(int start, int end, int thrd_index, void *user),
@@ -2353,6 +2711,33 @@ static void vd__core_job_thread_shutdown_cb(sx_job_context *ctx, int thread_inde
     sx_unused(user);
 }
 
+static const char *vd__core_str_alloc(sx_str_t *phandle, const char *fmt, ...)
+{
+    sx_str_t handle;
+    vd__with_temp_alloc(tmp_alloc)
+    {
+        va_list args;
+        va_start(args, fmt);
+        char *str = sx_vsnprintf_alloc(tmp_alloc, fmt, args);
+        va_end(args);
+
+        handle = sx_strpool_add(vd__state.core.strpool, str, sx_strlen(str));
+
+        sx_assert(handle);
+        if (phandle)
+        {
+            *phandle = handle;
+        }
+    }
+
+    return sx_strpool_cstr(vd__state.core.strpool, handle);
+}
+
+static void vd__core_str_free(sx_str_t handle)
+{
+    sx_strpool_del(vd__state.core.strpool, handle);
+}
+
 static void vd__core_init(const vd__config *conf)
 {
     vd__state.core.heap_alloc =
@@ -2364,6 +2749,8 @@ static void vd__core_init(const vd__config *conf)
     vd__state.core.alloc = vd__mem_create_allocator("core", VD__MEMOPTION_INHERIT, NULL, vd__state.core.heap_alloc);
     sx_assert_alwaysf(vd__state.core.alloc, "Fatal error: could not create core allocator");
     sx_mutex_init(&vd__state.core.tmp_allocs_mtx);
+
+    const sx_alloc *alloc = vd__state.core.alloc;
 
     // resolve number of worker threads if not defined explicitly
     // NOTE: we always have at least one extra worker thread not matter what input is
@@ -2391,6 +2778,9 @@ static void vd__core_init(const vd__config *conf)
     {
         vd__state.core.temp_alloc_dummy = vd__mem_create_allocator("temp", VD__MEMOPTION_INHERIT, NULL, NULL);
     }
+
+    vd__state.core.strpool = sx_strpool_create(alloc, NULL);
+    sx_assert_alwaysf(vd__state.core.strpool, "out of memory");
 
     vd__vfs_init();
 
@@ -2437,6 +2827,8 @@ static void vd__core_shutdown(void)
     }
 
     sx_mutex_release(&vd__state.core.tmp_allocs_mtx);
+
+    sx_strpool_destroy(vd__state.core.strpool, alloc);
 
     vd__mem_destroy_allocator(vd__state.core.alloc);
     vd__mem_shutdown();
@@ -2705,6 +3097,17 @@ static Janet cfun_vd_input_state(int32_t argc, Janet *argv)
 //
 // >>ecs
 
+typedef struct
+{
+    HMM_Vec3 position;
+    HMM_Vec3 scale;
+    sg_buffer vbuf;
+    sg_buffer ibuf;
+    uint32_t num_indices;
+} vd__static_mesh;
+
+ECS_COMPONENT_DECLARE(vd__static_mesh);
+
 ECS_STRUCT(vd__doll, {
     float time_factor;
     double time_sec;
@@ -2787,11 +3190,17 @@ static void vd__ecs_init()
     ecs_world_t *world = ecs_init();
     vd__state.ecs.world = world;
 
+    ECS_COMPONENT_DEFINE(vd__state.ecs.world, vd__static_mesh);
+
     ECS_META_COMPONENT(vd__state.ecs.world, vd__vec3);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__quat);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__transform);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__camera);
     ECS_META_COMPONENT(vd__state.ecs.world, vd__doll);
+
+    vd__state.v3d.camera_query = ecs_query(vd__state.ecs.world, {.terms = {ecs_id(vd__camera)}});
+    vd__state.v3d.doll_query = ecs_query(vd__state.ecs.world, {.terms = {{ecs_id(vd__transform)}, {ecs_id(vd__doll)}}});
+    vd__state.v3d.static_mesh_query = ecs_query(vd__state.ecs.world, {.terms = {ecs_id(vd__static_mesh)}});
 }
 
 static void vd__ecs_shutdown()
@@ -3069,6 +3478,24 @@ typedef struct
 {
 
 } vd__v3d_doll_load_params;
+
+typedef struct
+{
+
+} vd__image_load_params;
+
+typedef struct
+{
+    int first_mip;
+    sg_filter min_filter;
+    sg_filter mag_filter;
+    sg_wrap wrap_u;
+    sg_wrap wrap_v;
+    sg_wrap wrap_w;
+    sg_pixel_format fmt; // request image format. only valid for basis files
+    int aniso;
+    bool srgb;
+} vd__texture_load_params;
 
 static const JanetAbstractType vd__asset_handle_at = {"voodoo/asset/handle", JANET_ATEND_NAME};
 
@@ -3748,10 +4175,10 @@ void vd__asset_shutdown()
 
 static Janet cfun_vd_asset_load(int32_t argc, Janet *argv)
 {
-    janet_fixarity(argc, 2);
+    janet_arity(argc, 2, 3);
     vd__asset_handle *hnd = janet_abstract(&vd__asset_handle_at, sizeof(vd__asset_handle));
-    *hnd = vd__asset_load(janet_getcstring(argv, 0), janet_getcstring(argv, 1), &(vd__v3d_doll_load_params){},
-                          VD__ASSET_LOAD_FLAG_WAIT_ON_LOAD, NULL, 0);
+    *hnd = vd__asset_load(janet_getcstring(argv, 0), janet_getcstring(argv, 1),
+                          argc > 2 ? janet_unwrap_pointer(argv[2]) : NULL, VD__ASSET_LOAD_FLAG_WAIT_ON_LOAD, NULL, 0);
     return janet_wrap_abstract(hnd);
 }
 
@@ -3761,6 +4188,14 @@ static Janet cfun_vd_asset_load(int32_t argc, Janet *argv)
 // \___/_/ /_/|_|
 //
 // >>gfx
+
+// stb_image
+#define STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_STATIC
+#define STBI_MALLOC(sz) sx_malloc(vd__state.gfx.alloc, sz)
+#define STBI_REALLOC(p, newsz) sx_realloc(vd__state.gfx.alloc, p, newsz)
+#define STBI_FREE(p) sx_free(vd__state.gfx.alloc, p)
+#include "stb/stb_image.h"
 
 sg_buffer vd__gfx_buffer_append(sg_buffer buf, size_t size, const void *data, int *offset)
 {
@@ -3773,8 +4208,644 @@ sg_buffer vd__gfx_buffer_append(sg_buffer buf, size_t size, const void *data, in
     return buf;
 }
 
+/* static inline sg_image_type vd__texture_get_type(const ddsktx_texture_info* tc) */
+/* { */
+/*     sx_assertf(!((tc->flags & DDSKTX_TEXTURE_FLAG_CUBEMAP) && (tc->num_layers > 1)), */
+/*               "cube-array textures are not supported"); */
+/*     sx_assertf(!(tc->num_layers > 1 && tc->depth > 1), "3d-array textures are not supported"); */
+
+/*     if (tc->flags & DDSKTX_TEXTURE_FLAG_CUBEMAP) */
+/*         return SG_IMAGETYPE_CUBE; */
+/*     else if (tc->num_layers > 1) */
+/*         return SG_IMAGETYPE_ARRAY; */
+/*     else if (tc->depth > 1) */
+/*         return SG_IMAGETYPE_3D; */
+/*     else */
+/*         return SG_IMAGETYPE_2D; */
+/* } */
+
+/* static inline sg_pixel_format vd__texture_get_texture_format(ddsktx_format fmt) */
+/* { */
+/*     switch (fmt) { */
+/*     case DDSKTX_FORMAT_BGRA8:   return SG_PIXELFORMAT_RGBA8;    // TODO: FIXME ? */
+/*     case DDSKTX_FORMAT_RGBA8:   return SG_PIXELFORMAT_RGBA8; */
+/*     case DDSKTX_FORMAT_RGBA16F: return SG_PIXELFORMAT_RGBA16F; */
+/*     case DDSKTX_FORMAT_R32F:    return SG_PIXELFORMAT_R32F; */
+/*     case DDSKTX_FORMAT_R16F:    return SG_PIXELFORMAT_R16F; */
+/*     case DDSKTX_FORMAT_BC1:     return SG_PIXELFORMAT_BC1_RGBA; */
+/*     case DDSKTX_FORMAT_BC2:     return SG_PIXELFORMAT_BC2_RGBA; */
+/*     case DDSKTX_FORMAT_BC3:     return SG_PIXELFORMAT_BC3_RGBA; */
+/*     case DDSKTX_FORMAT_BC4:     return SG_PIXELFORMAT_BC4_R; */
+/*     case DDSKTX_FORMAT_BC5:     return SG_PIXELFORMAT_BC5_RG; */
+/*     case DDSKTX_FORMAT_BC6H:    return SG_PIXELFORMAT_BC6H_RGBF; */
+/*     case DDSKTX_FORMAT_BC7:     return SG_PIXELFORMAT_BC7_RGBA; */
+/*     case DDSKTX_FORMAT_PTC12:   return SG_PIXELFORMAT_PVRTC_RGB_2BPP; */
+/*     case DDSKTX_FORMAT_PTC14:   return SG_PIXELFORMAT_PVRTC_RGB_4BPP; */
+/*     case DDSKTX_FORMAT_PTC12A:  return SG_PIXELFORMAT_PVRTC_RGBA_2BPP; */
+/*     case DDSKTX_FORMAT_PTC14A:  return SG_PIXELFORMAT_PVRTC_RGBA_4BPP; */
+/*     case DDSKTX_FORMAT_ETC2:    return SG_PIXELFORMAT_ETC2_RGB8; */
+/*     case DDSKTX_FORMAT_ETC2A:   return SG_PIXELFORMAT_ETC2_RGB8A1; */
+/*     default:                    return SG_PIXELFORMAT_NONE; */
+/*     } */
+/* } */
+
+static vd__asset_load_data vd__image_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
+{
+    const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.gfx.alloc;
+
+    vd__image *img = sx_calloc(alloc, sizeof(vd__image));
+    if (!img)
+    {
+        sx_out_of_memory();
+        return (vd__asset_load_data){.obj = {0}};
+    }
+
+    char ext[32];
+    sx_os_path_ext(ext, sizeof(ext), params->path);
+    if (sx_strequalnocase(ext, ".dds") || sx_strequalnocase(ext, ".ktx"))
+    {
+        /* ddsktx_texture_info tc = { 0 }; */
+        /* ddsktx_error err; */
+        /* if (ddsktx_parse(&tc, mem->data, (uint32_t)mem->size, &err)) { */
+        /*     info->type = rizz__texture_get_type(&tc); */
+        /*     info->format = rizz__texture_get_texture_format(tc.format); */
+        /*     if (info->type == SG_IMAGETYPE_ARRAY) { */
+        /*         info->layers = tc.num_layers; */
+        /*     } else if (info->type == SG_IMAGETYPE_3D) { */
+        /*         info->depth = tc.depth; */
+        /*     } else { */
+        /*         info->layers = 1; */
+        /*     } */
+        /*     info->mem_size_bytes = tc.size_bytes; */
+        /*     info->width = tc.width; */
+        /*     info->height = tc.height; */
+        /*     info->mips = tc.num_mips; */
+        /*     info->bpp = tc.bpp; */
+        /* } else { */
+        /*     rizz__log_warn("reading texture '%s' metadata failed: %s", params->path, err.msg); */
+        /*     sx_memset(info, 0x0, sizeof(rizz_texture_info)); */
+        /* } */
+    }
+    else
+    {
+        // try to use stbi to load the image
+        if (stbi_info_from_memory(mem->data, (int)mem->size, &img->w, &img->h, &img->comps))
+        {
+            sx_assertf(img->w > 0 && img->h > 0, "invalid image size (%dx%d): %s", img->w, img->h, params->path);
+        }
+        else
+        {
+            vd__log_warn("reading image '%s' metadata failed: %s", params->path, stbi_failure_reason());
+        }
+    }
+
+    return (vd__asset_load_data){.obj = {.ptr = img}};
+}
+
+static bool vd__image_on_load(vd__asset_load_data *data, const vd__asset_load_params *params, const sx_mem_block *mem)
+{
+    const vd__image_load_params *iparams = params->params;
+    vd__image *img = data->obj.ptr;
+
+    char ext[32];
+    sx_os_path_ext(ext, sizeof(ext), params->path);
+
+    if (sx_strequalnocase(ext, ".dds") || sx_strequalnocase(ext, ".ktx"))
+    {
+        /* ddsktx_texture_info tc = { 0 }; */
+        /* ddsktx_error err; */
+        /* if (ddsktx_parse(&tc, mem->data, (int)mem->size, &err)) { */
+        /*     sx_assert(tc.num_mips <= SG_MAX_MIPMAPS); */
+
+        /*     switch (tex->info.type) { */
+        /*     case SG_IMAGETYPE_2D: { */
+        /*         for (int mip = first_mip; mip < tc.num_mips; mip++) { */
+        /*             int dst_mip = mip - first_mip; */
+        /*             ddsktx_sub_data sub_data; */
+        /*             ddsktx_get_sub(&tc, &sub_data, mem->data, (int)mem->size, 0, 0, mip); */
+        /*             desc->content.subimage[0][dst_mip].ptr = sub_data.buff; */
+        /*             desc->content.subimage[0][dst_mip].size = sub_data.size_bytes; */
+        /*         } */
+        /*     } break; */
+        /*     case SG_IMAGETYPE_CUBE: { */
+        /*         for (int face = 0; face < DDSKTX_CUBE_FACE_COUNT; face++) { */
+        /*             for (int mip = first_mip; mip < tc.num_mips; mip++) { */
+        /*                 int dst_mip = mip - first_mip; */
+        /*                 ddsktx_sub_data sub_data; */
+        /*                 ddsktx_get_sub(&tc, &sub_data, mem->data, (int)mem->size, 0, face, mip); */
+        /*                 desc->content.subimage[face][dst_mip].ptr = sub_data.buff; */
+        /*                 desc->content.subimage[face][dst_mip].size = sub_data.size_bytes; */
+        /*             } */
+        /*         } */
+        /*     } break; */
+        /*     case SG_IMAGETYPE_3D: { */
+        /*         for (int depth = 0; depth < tc.depth; depth++) { */
+        /*             for (int mip = first_mip; mip < tc.num_mips; mip++) { */
+        /*                 int dst_mip = mip - first_mip; */
+        /*                 ddsktx_sub_data sub_data; */
+        /*                 ddsktx_get_sub(&tc, &sub_data, mem->data, (int)mem->size, 0, depth, mip); */
+        /*                 desc->content.subimage[depth][dst_mip].ptr = sub_data.buff; */
+        /*                 desc->content.subimage[depth][dst_mip].size = sub_data.size_bytes; */
+        /*             } */
+        /*         } */
+        /*     } break; */
+        /*     case SG_IMAGETYPE_ARRAY: { */
+        /*         for (int array = 0; array < tc.num_layers; array++) { */
+        /*             for (int mip = first_mip; mip < tc.num_mips; mip++) { */
+        /*                 int dst_mip = mip - first_mip; */
+        /*                 ddsktx_sub_data sub_data; */
+        /*                 ddsktx_get_sub(&tc, &sub_data, mem->data, (int)mem->size, array, 0, mip); */
+        /*                 desc->content.subimage[array][dst_mip].ptr = sub_data.buff; */
+        /*                 desc->content.subimage[array][dst_mip].size = sub_data.size_bytes; */
+        /*             } */
+        /*         } */
+        /*     } break; */
+        /*     default: */
+        /*         break; */
+        /*     } */
+        /* } else { */
+        /*     vd__log_warn("parsing texture '%s' failed: %s", params->path, err.msg); */
+        /*     return false; */
+        /* } */
+    }
+    else
+    {
+        int w, h, c;
+        printf("mem size: %lld", mem->size);
+        stbi_uc *pixels = stbi_load_from_memory(mem->data, (int)mem->size, &w, &h, &c, 4);
+        if (pixels)
+        {
+            img->w = w;
+            img->h = h;
+            img->n = c;
+            img->pixels = sx_malloc(vd__state.asset.alloc, w * h * 4 * sizeof(uint8_t));
+            sx_memcpy(img->pixels, pixels, w * h * 4 * sizeof(uint8_t));
+            stbi_image_free((void *)pixels);
+        }
+        else
+        {
+            vd__log_warn("parsing image '%s' failed: %s", params->path, stbi_failure_reason());
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void vd__image_on_finalize(vd__asset_load_data *data, const vd__asset_load_params *params,
+                                  const sx_mem_block *mem)
+{
+    sx_unused(data);
+    sx_unused(mem);
+    sx_unused(params);
+}
+
+static void vd__image_on_reload(vd__asset_handle handle, vd__asset_obj prev_obj, const sx_alloc *alloc)
+{
+    sx_unused(prev_obj);
+    sx_unused(handle);
+    sx_unused(alloc);
+}
+
+static void vd__image_on_release(vd__asset_obj obj, const sx_alloc *alloc)
+{
+    vd__image *img = obj.ptr;
+    sx_assert(img);
+
+    if (!alloc)
+        alloc = vd__state.gfx.alloc;
+
+    sx_free(alloc, img);
+}
+
+static vd__asset_load_data vd__texture_on_prepare(const vd__asset_load_params *params, const sx_mem_block *mem)
+{
+    const sx_alloc *alloc = params->alloc ? params->alloc : vd__state.gfx.alloc;
+
+    vd__texture *tex = sx_calloc(alloc, sizeof(vd__texture));
+    if (!tex)
+    {
+        sx_out_of_memory();
+        return (vd__asset_load_data){.obj = {0}};
+    }
+
+    vd__texture_info *info = &tex->info;
+    char ext[32];
+    sx_os_path_ext(ext, sizeof(ext), params->path);
+    if (sx_strequalnocase(ext, ".dds") || sx_strequalnocase(ext, ".ktx"))
+    {
+        /* ddsktx_texture_info tc = { 0 }; */
+        /* ddsktx_error err; */
+        /* if (ddsktx_parse(&tc, mem->data, (uint32_t)mem->size, &err)) { */
+        /*     info->type = rizz__texture_get_type(&tc); */
+        /*     info->format = rizz__texture_get_texture_format(tc.format); */
+        /*     if (info->type == SG_IMAGETYPE_ARRAY) { */
+        /*         info->layers = tc.num_layers; */
+        /*     } else if (info->type == SG_IMAGETYPE_3D) { */
+        /*         info->depth = tc.depth; */
+        /*     } else { */
+        /*         info->layers = 1; */
+        /*     } */
+        /*     info->mem_size_bytes = tc.size_bytes; */
+        /*     info->width = tc.width; */
+        /*     info->height = tc.height; */
+        /*     info->mips = tc.num_mips; */
+        /*     info->bpp = tc.bpp; */
+        /* } else { */
+        /*     rizz__log_warn("reading texture '%s' metadata failed: %s", params->path, err.msg); */
+        /*     sx_memset(info, 0x0, sizeof(rizz_texture_info)); */
+        /* } */
+    }
+    else
+    {
+        // try to use stbi to load the image
+        int comp;
+        if (stbi_info_from_memory(mem->data, (int)mem->size, &info->width, &info->height, &comp))
+        {
+            sx_assertf(!stbi_is_16_bit_from_memory(mem->data, (int)mem->size),
+                       "images with 16bit color channel are not supported: %s", params->path);
+            sx_assertf(info->width > 0 && info->height > 0, "invalid image size (%dx%d): %s", info->width, info->height,
+                       params->path);
+            info->type = SG_IMAGETYPE_2D;
+            info->format = SG_PIXELFORMAT_RGBA8; // always convert to RGBA
+            info->mem_size_bytes = 4 * info->width * info->height;
+            info->layers = 1;
+            info->mips = 1;
+            info->bpp = 32;
+        }
+        else
+        {
+            vd__log_warn("reading image '%s' metadata failed: %s", params->path, stbi_failure_reason());
+            sx_memset(info, 0x0, sizeof(vd__texture_info));
+        }
+    }
+
+    tex->img = sg_alloc_image();
+    sx_assert(tex->img.id);
+
+    void *user_data_1 = sx_malloc(vd__state.gfx.alloc, sizeof(sg_image_desc));
+    void *user_data_2 = sx_malloc(vd__state.gfx.alloc, sizeof(sg_sampler_desc));
+
+    return (vd__asset_load_data){.obj = {.ptr = tex}, .user1 = user_data_1, .user2 = user_data_2};
+}
+
+static bool vd__texture_on_load(vd__asset_load_data *data, const vd__asset_load_params *params, const sx_mem_block *mem)
+{
+    const vd__texture_load_params *tparams = params->params;
+    vd__texture *tex = data->obj.ptr;
+    sg_image_desc *idesc = data->user1;
+    sg_sampler_desc *sdesc = data->user1;
+
+    int first_mip = tparams->first_mip ? tparams->first_mip : vd__state.gfx.default_first_mip;
+    if (first_mip >= tex->info.mips)
+    {
+        first_mip = tex->info.mips - 1;
+    }
+    int num_mips = tex->info.mips - first_mip;
+
+    { // fix width/height/mips of the texture
+        int w = tex->info.width;
+        int h = tex->info.height;
+        for (int i = 0; i < first_mip; i++)
+        {
+            w >>= 1;
+            h >>= 1;
+        }
+        tex->info.mips = num_mips;
+        tex->info.width = w;
+        tex->info.height = h;
+    }
+
+    sx_assert(idesc);
+    *idesc = (sg_image_desc){
+        .type = tex->info.type,
+        .width = tex->info.width,
+        .height = tex->info.height,
+        .num_slices = tex->info.layers,
+        .num_mipmaps = num_mips,
+        .pixel_format = tex->info.format,
+    };
+
+    sx_assert(sdesc);
+    *sdesc = (sg_sampler_desc){
+        .min_filter = tparams->min_filter != 0 ? tparams->min_filter : vd__state.gfx.default_min_filter,
+        .mag_filter = tparams->mag_filter != 0 ? tparams->mag_filter : vd__state.gfx.default_mag_filter,
+        .wrap_u = tparams->wrap_u,
+        .wrap_v = tparams->wrap_v,
+        .wrap_w = tparams->wrap_w,
+        .max_anisotropy = tparams->aniso ? (uint32_t)tparams->aniso : (uint32_t)vd__state.gfx.default_aniso,
+    };
+
+    // see if we have metadata, and parse it and override the texture desc
+    for (uint32_t i = 0; i < params->num_meta; i++)
+    {
+        if (sx_strequal(params->metas[i].key, "wrap"))
+        {
+            if (sx_strequal(params->metas[i].value, "repeat"))
+                sdesc->wrap_u = sdesc->wrap_v = sdesc->wrap_w = SG_WRAP_REPEAT;
+            else if (sx_strequal(params->metas[i].value, "clamp_to_edge"))
+                sdesc->wrap_u = sdesc->wrap_v = sdesc->wrap_w = SG_WRAP_CLAMP_TO_EDGE;
+            else if (sx_strequal(params->metas[i].value, "clamp_to_border"))
+                sdesc->wrap_u = sdesc->wrap_v = sdesc->wrap_w = SG_WRAP_CLAMP_TO_BORDER;
+            else if (sx_strequal(params->metas[i].value, "mirrored_repeat"))
+                sdesc->wrap_u = sdesc->wrap_v = sdesc->wrap_w = SG_WRAP_MIRRORED_REPEAT;
+        }
+        else if (sx_strequal(params->metas[i].key, "filter"))
+        {
+            if (sx_strequal(params->metas[i].value, "nearest"))
+                sdesc->min_filter = sdesc->mag_filter = SG_FILTER_NEAREST;
+            else if (sx_strequal(params->metas[i].value, "linear"))
+                sdesc->min_filter = sdesc->mag_filter = SG_FILTER_LINEAR;
+            else if (sx_strequal(params->metas[i].value, "nearest_mipmap_nearest"))
+                sdesc->min_filter = sdesc->mag_filter = SG_FILTER_NEAREST;
+            else if (sx_strequal(params->metas[i].value, "nearest_mipmap_linear"))
+                sdesc->min_filter = sdesc->mag_filter = SG_FILTER_LINEAR;
+            else if (sx_strequal(params->metas[i].value, "linear_mipmap_nearest"))
+                sdesc->min_filter = sdesc->mag_filter = SG_FILTER_NEAREST;
+            else if (sx_strequal(params->metas[i].value, "linear_mipmap_linear"))
+                sdesc->min_filter = sdesc->mag_filter = SG_FILTER_LINEAR;
+        }
+        else if (sx_strequal(params->metas[i].key, "aniso"))
+        {
+            sdesc->max_anisotropy = sx_toint(params->metas[i].value);
+        }
+    }
+
+    char ext[32];
+    sx_os_path_ext(ext, sizeof(ext), params->path);
+
+    if (sx_strequalnocase(ext, ".dds") || sx_strequalnocase(ext, ".ktx"))
+    {
+        /* ddsktx_texture_info tc = { 0 }; */
+        /* ddsktx_error err; */
+        /* if (ddsktx_parse(&tc, mem->data, (int)mem->size, &err)) { */
+        /*     sx_assert(tc.num_mips <= SG_MAX_MIPMAPS); */
+
+        /*     switch (tex->info.type) { */
+        /*     case SG_IMAGETYPE_2D: { */
+        /*         for (int mip = first_mip; mip < tc.num_mips; mip++) { */
+        /*             int dst_mip = mip - first_mip; */
+        /*             ddsktx_sub_data sub_data; */
+        /*             ddsktx_get_sub(&tc, &sub_data, mem->data, (int)mem->size, 0, 0, mip); */
+        /*             desc->content.subimage[0][dst_mip].ptr = sub_data.buff; */
+        /*             desc->content.subimage[0][dst_mip].size = sub_data.size_bytes; */
+        /*         } */
+        /*     } break; */
+        /*     case SG_IMAGETYPE_CUBE: { */
+        /*         for (int face = 0; face < DDSKTX_CUBE_FACE_COUNT; face++) { */
+        /*             for (int mip = first_mip; mip < tc.num_mips; mip++) { */
+        /*                 int dst_mip = mip - first_mip; */
+        /*                 ddsktx_sub_data sub_data; */
+        /*                 ddsktx_get_sub(&tc, &sub_data, mem->data, (int)mem->size, 0, face, mip); */
+        /*                 desc->content.subimage[face][dst_mip].ptr = sub_data.buff; */
+        /*                 desc->content.subimage[face][dst_mip].size = sub_data.size_bytes; */
+        /*             } */
+        /*         } */
+        /*     } break; */
+        /*     case SG_IMAGETYPE_3D: { */
+        /*         for (int depth = 0; depth < tc.depth; depth++) { */
+        /*             for (int mip = first_mip; mip < tc.num_mips; mip++) { */
+        /*                 int dst_mip = mip - first_mip; */
+        /*                 ddsktx_sub_data sub_data; */
+        /*                 ddsktx_get_sub(&tc, &sub_data, mem->data, (int)mem->size, 0, depth, mip); */
+        /*                 desc->content.subimage[depth][dst_mip].ptr = sub_data.buff; */
+        /*                 desc->content.subimage[depth][dst_mip].size = sub_data.size_bytes; */
+        /*             } */
+        /*         } */
+        /*     } break; */
+        /*     case SG_IMAGETYPE_ARRAY: { */
+        /*         for (int array = 0; array < tc.num_layers; array++) { */
+        /*             for (int mip = first_mip; mip < tc.num_mips; mip++) { */
+        /*                 int dst_mip = mip - first_mip; */
+        /*                 ddsktx_sub_data sub_data; */
+        /*                 ddsktx_get_sub(&tc, &sub_data, mem->data, (int)mem->size, array, 0, mip); */
+        /*                 desc->content.subimage[array][dst_mip].ptr = sub_data.buff; */
+        /*                 desc->content.subimage[array][dst_mip].size = sub_data.size_bytes; */
+        /*             } */
+        /*         } */
+        /*     } break; */
+        /*     default: */
+        /*         break; */
+        /*     } */
+        /* } else { */
+        /*     vd__log_warn("parsing texture '%s' failed: %s", params->path, err.msg); */
+        /*     return false; */
+        /* } */
+    }
+    else
+    {
+        int w, h, comp;
+        stbi_uc *pixels = stbi_load_from_memory(mem->data, (int)mem->size, &w, &h, &comp, 4);
+        if (pixels)
+        {
+            sx_assert(tex->info.width == w && tex->info.height == h);
+            idesc->data.subimage[0][0].ptr = pixels;
+            idesc->data.subimage[0][0].size = w * h * 4;
+        }
+        else
+        {
+            vd__log_warn("parsing image '%s' failed: %s", params->path, stbi_failure_reason());
+            return false;
+        }
+    }
+
+    return true;
+}
+
+static void vd__texture_on_finalize(vd__asset_load_data *data, const vd__asset_load_params *params,
+                                    const sx_mem_block *mem)
+{
+    sx_unused(mem);
+
+    vd__texture *tex = data->obj.ptr;
+    sg_image_desc *idesc = data->user1;
+    sx_assert(idesc);
+    sg_sampler_desc *sdesc = data->user2;
+    sx_assert(sdesc);
+
+    char basename[64];
+    idesc->label =
+        vd__core_str_alloc(&tex->info.name_hdl, sx_os_path_basename(basename, sizeof(basename), params->path));
+    sdesc->label =
+        vd__core_str_alloc(&tex->info.name_hdl, sx_os_path_basename(basename, sizeof(basename), params->path));
+
+    sg_init_image(tex->img, idesc);
+    sg_init_sampler(tex->smp, sdesc);
+
+    char ext[32];
+    sx_os_path_ext(ext, sizeof(ext), params->path);
+    // TODO: do something better in case of stbi
+    if (!sx_strequalnocase(ext, ".dds") && !sx_strequalnocase(ext, ".ktx"))
+    {
+        sx_assert(idesc->data.subimage[0][0].ptr);
+        stbi_image_free((void *)idesc->data.subimage[0][0].ptr);
+    }
+
+    sx_free(vd__state.gfx.alloc, data->user1);
+    sx_free(vd__state.gfx.alloc, data->user2);
+}
+
+static void vd__texture_on_reload(vd__asset_handle handle, vd__asset_obj prev_obj, const sx_alloc *alloc)
+{
+    sx_unused(prev_obj);
+    sx_unused(handle);
+    sx_unused(alloc);
+}
+
+static void vd__texture_on_release(vd__asset_obj obj, const sx_alloc *alloc)
+{
+    vd__texture *tex = obj.ptr;
+    sx_assert(tex);
+
+    if (!alloc)
+        alloc = vd__state.gfx.alloc;
+
+    if (tex->img.id)
+        sg_destroy_image(tex->img);
+
+    if (tex->smp.id)
+        sg_destroy_sampler(tex->smp);
+
+    if (tex->info.name_hdl)
+        vd__core_str_free(tex->info.name_hdl);
+
+    sx_free(alloc, tex);
+}
+
+/* static vd__texture vd__texture_create_checker(int checker_size, int size, const sx_color colors[2]) */
+/* { */
+/*     sx_assertf(size % 4 == 0, "size must be multiple of four"); */
+/*     sx_assertf(size % checker_size == 0, "checker_size must be dividable by size"); */
+
+/*     int size_bytes = size * size * sizeof(uint32_t); */
+/*     uint32_t* pixels = sx_malloc(vd__state.gfx.alloc, size_bytes); */
+
+/*     // split into tiles and color them */
+/*     int tiles_x = size / checker_size; */
+/*     int tiles_y = size / checker_size; */
+/*     int num_tiles = tiles_x * tiles_y; */
+/*     vd__texture tex; */
+
+/*     vd__with_temp_alloc(tmp_alloc) { */
+/*         sx_ivec2* poss = sx_malloc(tmp_alloc, sizeof(sx_ivec2) * num_tiles); */
+/*         sx_assert(poss); */
+/*         int _x = 0, _y = 0; */
+/*         for (int i = 0; i < num_tiles; i++) { */
+/*             poss[i] = sx_ivec2i(_x, _y); */
+/*             _x += checker_size; */
+/*             if (_x >= size) { */
+/*                 _x = 0; */
+/*                 _y += checker_size; */
+/*             } */
+/*         } */
+
+/*         int color_idx = 0; */
+/*         for (int i = 0; i < num_tiles; i++) { */
+/*             sx_ivec2 p = poss[i]; */
+/*             sx_color c = colors[color_idx]; */
+/*             if (i == 0 || ((i + 1) % tiles_x) != 0) */
+/*                 color_idx = !color_idx; */
+/*             int end_x = p.x + checker_size; */
+/*             int end_y = p.y + checker_size; */
+/*             for (int y = p.y; y < end_y; y++) { */
+/*                 for (int x = p.x; x < end_x; x++) { */
+/*                     int pixel = x + y * size; */
+/*                     pixels[pixel] = c.n; */
+/*                 } */
+/*             } */
+/*         } */
+
+/*         tex = (vd__texture){   .img = sg_make_image(&(sg_image_desc){ */
+/*                                 .width = size, */
+/*                                 .height = size, */
+/*                                 .num_mipmaps = 1, */
+/*                                 .pixel_format = SG_PIXELFORMAT_RGBA8, */
+/*                                 .data= (sg_image_data){ .subimage[0][0].ptr = pixels, */
+/*                                                                .subimage[0][0].size = size_bytes }, */
+/*                                 .label = "checker_texture" }), */
+/*                             .info = (vd__texture_info){ .type = SG_IMAGETYPE_2D, */
+/*                                                          .format = SG_PIXELFORMAT_RGBA8, */
+/*                                                          .mem_size_bytes = size_bytes, */
+/*                                                          .width = size, */
+/*                                                          .height = size, */
+/*                                                          .layers = 1, */
+/*                                                          .mips = 1, */
+/*                                                          .bpp = 32 } }; */
+
+/*         sx_free(tmp_alloc, poss); */
+/*         sx_free(vd__state.gfx.alloc, pixels); */
+/*     } */
+/*     return tex; */
+/* } */
+
+static void vd__gfx_texture_init(void)
+{
+    static uint32_t white_pixel = 0xffffffff;
+    static uint32_t black_pixel = 0xff000000;
+    vd__state.gfx.white_tex = (vd__texture){
+        .img = sg_make_image(&(sg_image_desc){
+            .width = 1,
+            .height = 1,
+            .num_mipmaps = 1,
+            .pixel_format = SG_PIXELFORMAT_RGBA8,
+            .data = (sg_image_data){.subimage[0][0].ptr = &white_pixel, .subimage[0][0].size = sizeof(white_pixel)},
+            .label = "white_texture_1x1"}),
+        .info = (vd__texture_info){.type = SG_IMAGETYPE_2D,
+                                   .format = SG_PIXELFORMAT_RGBA8,
+                                   .mem_size_bytes = sizeof(white_pixel),
+                                   .width = 1,
+                                   .height = 1,
+                                   .layers = 1,
+                                   .mips = 1,
+                                   .bpp = 32}};
+
+    /* g_gfx.tex_mgr.black_tex = (rizz_texture){ */
+    /*     .img = the__gfx.make_image(&(sg_image_desc){ */
+    /*         .width = 1, */
+    /*         .height = 1, */
+    /*         .num_mipmaps = 1, */
+    /*         .pixel_format = SG_PIXELFORMAT_RGBA8, */
+    /*         .content = (sg_image_content){ .subimage[0][0].ptr = &k_black_pixel, */
+    /*                                        .subimage[0][0].size = sizeof(k_black_pixel) }, */
+    /*         .label = "rizz_black_texture_1x1" }), */
+    /*     .info = (rizz_texture_info){ .type = SG_IMAGETYPE_2D, */
+    /*                                  .format = SG_PIXELFORMAT_RGBA8, */
+    /*                                  .mem_size_bytes = sizeof(k_black_pixel), */
+    /*                                  .width = 1, */
+    /*                                  .height = 1, */
+    /*                                  .layers = 1, */
+    /*                                  .mips = 1, */
+    /*                                  .bpp = 32 } */
+    /* }; */
+
+    /* const sx_color checker_colors[] = { sx_color4u(255, 0, 255, 255), */
+    /*                                     sx_color4u(255, 255, 255, 255) }; */
+    /* g_gfx.tex_mgr.checker_tex = rizz__texture_create_checker(CHECKER_TEXTURE_SIZE / 2, */
+    /*                                                          CHECKER_TEXTURE_SIZE, checker_colors); */
+
+    vd__asset_register_asset_type("image",
+                                  (vd__asset_callbacks){.on_prepare = vd__image_on_prepare,
+                                                        .on_load = vd__image_on_load,
+                                                        .on_finalize = vd__image_on_finalize,
+                                                        .on_reload = vd__image_on_reload,
+                                                        .on_release = vd__image_on_release},
+                                  "image_load_params", sizeof(vd__image_load_params), (vd__asset_obj){0},
+                                  // (rizz_asset_obj){ .ptr = &g_gfx.tex_mgr.checker_tex },
+                                  (vd__asset_obj){0}, 0);
+    vd__asset_register_asset_type("texture",
+                                  (vd__asset_callbacks){.on_prepare = vd__texture_on_prepare,
+                                                        .on_load = vd__texture_on_load,
+                                                        .on_finalize = vd__texture_on_finalize,
+                                                        .on_reload = vd__texture_on_reload,
+                                                        .on_release = vd__texture_on_release},
+                                  "texture_load_params", sizeof(vd__texture_load_params), (vd__asset_obj){0},
+                                  // (rizz_asset_obj){ .ptr = &g_gfx.tex_mgr.checker_tex },
+                                  (vd__asset_obj){.ptr = &vd__state.gfx.white_tex}, 0);
+}
+
 void vd__gfx_init()
 {
+    vd__state.gfx.alloc = vd__mem_create_allocator("gfx", VD__MEMOPTION_INHERIT, "core", vd__core_heap_alloc());
     sg_setup(&(sg_desc){
         .environment = sglue_environment(),
         .logger.func = slog_func,
@@ -3783,6 +4854,8 @@ void vd__gfx_init()
     sgl_setup(&(sgl_desc_t){
         .logger.func = slog_func,
     });
+
+    vd__gfx_texture_init();
 
     ozz_setup(&(ozz_desc_t){.max_palette_joints = 64, .max_instances = 1});
 
@@ -3804,6 +4877,24 @@ static void vd__gfx_shutdown()
     sg_shutdown();
 }
 
+static Janet cfun_vd_gfx_img_get(int32_t argc, Janet *argv)
+{
+    janet_fixarity(argc, 1);
+    vd__asset_handle *hnd = (vd__asset_handle *)janet_unwrap_abstract(argv[0]);
+    const vd__image *img = (vd__image *)vd__asset_obj_get(*hnd).ptr;
+    JanetTable *t = janet_table(4);
+
+    janet_table_put(t, janet_ckeywordv("w"), janet_wrap_number(img->w));
+    janet_table_put(t, janet_ckeywordv("h"), janet_wrap_number(img->h));
+    janet_table_put(t, janet_ckeywordv("n"), janet_wrap_number(img->n));
+
+    int size = img->w * img->h * 4;
+    JanetBuffer *pxb = janet_buffer(size);
+    janet_buffer_push_bytes(pxb, img->pixels, size);
+    janet_table_put(t, janet_ckeywordv("pixels"), janet_wrap_buffer(pxb));
+    return janet_wrap_table(t);
+}
+
 //    ____________  _______  ______
 //   / __/ ___/ _ \/  _/ _ \/_  __/
 //  _\ \/ /__/ , _// // ___/ / /
@@ -3811,8 +4902,8 @@ static void vd__gfx_shutdown()
 //
 // >>script
 
-static void vd__app__init(bool init_script);
-static void vd__app__shutdown(bool shutdown_script);
+JanetSignal vd__app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const Janet *argv, Janet *out,
+                                         JanetFiber **f);
 
 typedef struct
 {
@@ -3865,7 +4956,7 @@ static void vd__janet_cdefs(JanetTable *env)
 
 EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
 {
-    vd__app__shutdown(true);
+    janet_deinit();
 
     janet_init();
     JanetTable *core_env = janet_core_env(NULL);
@@ -3875,7 +4966,32 @@ EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
     janet_cfuns(core_env, NULL, vd__cfuns);
 
     char module_path[VD__MAX_PATH];
-    sx_snprintf(module_path, sizeof(module_path), "/voodoo/%s.janet", "game");
+    sx_snprintf(module_path, sizeof(module_path), "./voodoo/%s.janet", "game");
+
+    printf("reloading module: %s\n", module_path);
+
+    DIR *d;
+    struct dirent *dir;
+    d = opendir("./voodoo");
+    if (d)
+    {
+        while ((dir = readdir(d)) != NULL)
+        {
+            printf("%s\n", dir->d_name);
+        }
+        closedir(d);
+    }
+
+    int c;
+    FILE *file;
+    file = fopen(module_path, "r");
+    if (file)
+    {
+        while ((c = getc(file)) != EOF)
+            putchar(c);
+        fclose(file);
+    }
+    printf("\n\n");
 
     char module_wrapper[512];
     sx_os_path_exists(module_path) ? sx_snprintf(module_wrapper, sizeof(module_wrapper),
@@ -3888,14 +5004,17 @@ EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
                                                  "(import game :prefix \"\")\n"
                                                  "(voodoo)");
 
-    Janet ret;
-    JanetSignal status = janet_dostring(core_env, module_wrapper, "main", &ret);
+    printf("executing script: %s\n", module_wrapper);
 
-    if (status == JANET_SIGNAL_ERROR)
+    Janet ret;
+    if (janet_dostring(core_env, module_wrapper, "main", &ret))
     {
         fprintf(stderr, "failed executing module\n");
+        vd__state.script.evaluation_err = true;
         return 0;
     }
+
+    vd__state.script.evaluation_err = false;
 
     JanetTable *cfg = janet_unwrap_table(ret);
     vd__state.app.width = janet_unwrap_integer(janet_table_rawget(cfg, janet_ckeywordv("width")));
@@ -3909,7 +5028,17 @@ EMSCRIPTEN_KEEPALIVE int vd__script_evaluate(const char *src)
     janet_gcroot(janet_wrap_function(vd__state.app.mod_update_cb));
     janet_gcroot(janet_wrap_function(vd__state.app.mod_shutdown_cb));
 
-    vd__app__init(false);
+    vd__ecs_shutdown();
+    vd__ecs_init();
+
+    JanetSignal status =
+        vd__app_janet_pcall_keep_env(vd__state.app.mod_init_cb, 0, NULL, &ret, &vd__state.app.main_fiber);
+    if (status == JANET_SIGNAL_ERROR)
+    {
+        printf("error loading game\n");
+        janet_stacktrace(vd__state.app.main_fiber, ret);
+        sapp_quit();
+    }
 
     return 1;
 }
@@ -4457,17 +5586,6 @@ static Janet cfun_vd_game_object_set(int32_t argc, Janet *argv)
 //  |___/____/____/
 //
 // >>v3d
-
-typedef struct
-{
-    HMM_Vec3 position;
-    HMM_Vec3 scale;
-    sg_buffer vbuf;
-    sg_buffer ibuf;
-    uint32_t num_indices;
-} vd__static_mesh;
-
-ECS_COMPONENT_DECLARE(vd__static_mesh);
 
 typedef struct vd__animation_load_params vd__animation_load_params;
 
@@ -5143,12 +6261,6 @@ static void vd__v3d_init()
                                   "vd__doll_load_params", sizeof(vd__v3d_doll_load_params), (vd__asset_obj){0},
                                   (vd__asset_obj){0}, VD__ASSET_LOAD_FLAG_TEXT_FILE);
 
-    ECS_COMPONENT_DEFINE(vd__state.ecs.world, vd__static_mesh);
-
-    vd__state.v3d.camera_query = ecs_query(vd__state.ecs.world, {.terms = {ecs_id(vd__camera)}});
-    vd__state.v3d.doll_query = ecs_query(vd__state.ecs.world, {.terms = {{ecs_id(vd__transform)}, {ecs_id(vd__doll)}}});
-    vd__state.v3d.static_mesh_query = ecs_query(vd__state.ecs.world, {.terms = {ecs_id(vd__static_mesh)}});
-
     vd__v3d_shadow_pass_init(&vd__state.v3d.fwd.shadow, VD__CONFIG_SHADOW_MAP_SIZE);
     vd__v3d_display_pass_init(&vd__state.v3d.fwd.display);
 }
@@ -5226,13 +6338,12 @@ JanetSignal vd__app_janet_pcall_keep_env(JanetFunction *fun, int32_t argc, const
     return janet_continue(fiber, janet_wrap_nil(), out);
 }
 
-void vd__app__init(bool init_script)
+void vd__app__init()
 {
     vd__core_init(&(vd__config){0});
     vd__ecs_init();
     vd__asset_init();
-    if (init_script)
-        vd__script_init("game");
+    vd__script_init("game");
     vd__gfx_init();
     vd__v3d_init();
     vd__dbg_draw_init();
@@ -5253,14 +6364,13 @@ void vd__app__init(bool init_script)
 
 void vd__app_init()
 {
-    vd__app__init(true);
+    vd__app__init();
 }
 
-void vd__app__shutdown(bool shutdown_script)
+void vd__app__shutdown()
 {
     vd__gfx_shutdown();
-    if (shutdown_script)
-        vd__script_shutdown();
+    vd__script_shutdown();
     vd__asset_shutdown();
     vd__vfs_shutdown();
     vd__ecs_shutdown();
@@ -5272,7 +6382,7 @@ void vd__app__shutdown(bool shutdown_script)
 
 void vd__app_shutdown()
 {
-    vd__app__shutdown(true);
+    vd__app__shutdown();
 }
 
 void vd__app_event(const sapp_event *ev)
@@ -5362,7 +6472,6 @@ void vd__app_event(const sapp_event *ev)
             janet_stacktrace(vd__state.app.main_fiber, ret);
             sapp_quit();
         }
-        janet_gcunroot(evj);
 
         sapp_consume_event();
     }
@@ -5392,16 +6501,18 @@ void vd__app_update(void)
     //   }
     // });
 
-    Janet jdt = janet_wrap_number(vd__core_delta_time());
-
-    Janet ret;
-    JanetSignal status =
-        vd__app_janet_pcall_keep_env(vd__state.app.mod_update_cb, 1, &jdt, &ret, &vd__state.app.main_fiber);
-    if (status == JANET_SIGNAL_ERROR)
+    if (!vd__state.script.evaluation_err)
     {
-        printf("error loading game\n");
-        janet_stacktrace(vd__state.app.main_fiber, ret);
-        sapp_quit();
+        Janet jdt = janet_wrap_number(vd__core_delta_time());
+        Janet ret;
+        JanetSignal status =
+            vd__app_janet_pcall_keep_env(vd__state.app.mod_update_cb, 1, &jdt, &ret, &vd__state.app.main_fiber);
+        if (status == JANET_SIGNAL_ERROR)
+        {
+            printf("error loading game\n");
+            janet_stacktrace(vd__state.app.main_fiber, ret);
+            sapp_quit();
+        }
     }
 
     vd__core_update();

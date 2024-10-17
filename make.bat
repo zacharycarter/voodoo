@@ -151,12 +151,14 @@ call emar.bat rcu .\thirdparty\ozz-animation\ozz.a^
 @REM -s EXPORT_ES6 -s EXPORT_NAME="'Voodoo'" -s EXPORTED_RUNTIME_METHODS=["FS"] -lidbfs.js .\thirdparty\ozz-animation\ozz.a
 
 call emcc %* -g -O2 -msimd128 -mavx^
- -s ASSERTIONS=2 -s NO_EXIT_RUNTIME=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=32^
+ -s ASSERTIONS=2 -s NO_EXIT_RUNTIME=1 -s USE_PTHREADS=1 -s PTHREAD_POOL_SIZE=navigator.hardwareConcurrency+1^
  -s STACK_SIZE=512MB -s ENVIRONMENT="web,worker" -s INITIAL_MEMORY=1024MB -DUSE_DBG_UI^
  -I.\assets\shaders\wgsl -I.\thirdparty -I.\thirdparty\sx\include -I.\thirdparty\stackwalkerc^
  -I.\thirdparty\cj5 -I.\thirdparty\flecs -I.\thirdparty\hmm -I.\thirdparty\janet -I.\thirdparty\sokol^
  -I.\thirdparty\ozz-util -o .\web\voodoo.js -s USE_WEBGPU=1 -s ASYNCIFY=1 -Wfatal-errors^
  --preload-file .\assets\scripts\game.janet^
+ --preload-file .\assets\ship_blueprints\battleship_00.png^
+ --preload-file .\assets\ship_blueprints\battleship_01.png^
  --preload-file .\assets\dolls\ozz_skin.doll^
  --preload-file .\assets\dolls\ozz_skin_skeleton.ozz^
  --preload-file .\assets\dolls\ozz_skin_animation.ozz^

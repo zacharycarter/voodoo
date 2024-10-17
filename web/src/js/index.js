@@ -156,8 +156,8 @@ const Module = {
   set_signal: Signal.set,
   signals: signals,
   preInit: () => {
-    Module.FS.mkdir("/voodoo");
-    Module.FS.mount(Module.FS.filesystems.IDBFS, {}, "/voodoo");
+    Module.FS.mkdir("./voodoo");
+    Module.FS.mount(Module.FS.filesystems.IDBFS, {}, "./voodoo");
     Module.FS.syncfs(true, function (err) {});
     // Module.FS.writeFile("/voodoo/game.janet", "(print \"hello world\")", { encoding: "utf8" });
   },
@@ -167,7 +167,7 @@ const Module = {
         encoding: "utf8",
       });
       const entryScriptSrcBuf = new TextEncoder("utf-8").encode(entryScriptSrc);
-      const entryScriptFile = Module.FS.open("/voodoo/game.janet", "w+");
+      const entryScriptFile = Module.FS.open("./voodoo/game.janet", "w+");
       Module.FS.write(
         entryScriptFile,
         entryScriptSrcBuf,
@@ -202,18 +202,22 @@ Voodoo(Module).then((VD) => {
   };
 
   parent.addEventListener("keydown", (e) => {
-    if (e.key === 'Enter' && e.shiftKey) {
+    if (e.key === 'Enter' && e.ctrlKey) {
       const doc = VD.editor.state.doc.toString();
       Module.FS.writeFile(
-        "/voodoo/game.janet",
+        "./voodoo/game.janet",
         doc,
         { encoding: "utf8" }
       );
-      Module.FS.syncfs(true, function (err) {
-        if (!!err) console.error(err);
-      });
+
+      // Module.FS.syncfs(false, function (err) {
+      //   if (!!err) console.error(err);
+      //   else {
+      //   }
+      // });
 
       const script = VD.stringToNewUTF8(doc);
+      console.log("script: ", doc, "\n");
 
       const result = VD._vd__script_evaluate(script);
 
