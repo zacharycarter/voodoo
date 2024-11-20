@@ -158,7 +158,6 @@ call emcc %* -g -O2 -msimd128 -mavx^
  -I.\thirdparty\ozz-util -o .\web\voodoo.js -s USE_WEBGPU=1 -s ASYNCIFY=1 -Wfatal-errors^
  --preload-file .\assets\scripts\game.janet^
  --preload-file .\assets\ship_blueprints\battleship_00.png^
- --preload-file .\assets\ship_blueprints\battleship_01.png^
  --preload-file .\assets\dolls\ozz_skin.doll^
  --preload-file .\assets\dolls\ozz_skin_skeleton.ozz^
  --preload-file .\assets\dolls\ozz_skin_animation.ozz^

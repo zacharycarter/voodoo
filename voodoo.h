@@ -1075,6 +1075,9 @@ static struct
             sg_pipeline pip;
 
             vd__dbg_shape shapes[VD__NUM_SHAPES];
+
+            int num_boxes;
+            HMM_Mat4 box_transforms[256 << 10];
         } dbg;
 
         struct
@@ -1113,6 +1116,9 @@ static struct
         ecs_query_t *camera_query;
         ecs_query_t *doll_query;
         ecs_query_t *static_mesh_query;
+
+        sg_buffer cube_vbuf;
+        sg_buffer cube_ibuf;
     } v3d;
 
     struct
@@ -2787,7 +2793,7 @@ static void vd__core_init(const vd__config *conf)
     vd__state.core.jobs = sx_job_create_context(
         vd__state.core.alloc, &(sx_job_context_desc){.num_threads = num_worker_threads,
                                                      .max_fibers = 64,
-                                                     .fiber_stack_sz = 5120 * 1024,
+                                                     .fiber_stack_sz = 1048576,
                                                      .thread_init_cb = vd__core_job_thread_init_cb,
                                                      .thread_shutdown_cb = vd__core_job_thread_shutdown_cb});
     // if (!vd__state.core.jobs)
@@ -4371,7 +4377,6 @@ static bool vd__image_on_load(vd__asset_load_data *data, const vd__asset_load_pa
     else
     {
         int w, h, c;
-        printf("mem size: %lld", mem->size);
         stbi_uc *pixels = stbi_load_from_memory(mem->data, (int)mem->size, &w, &h, &c, 4);
         if (pixels)
         {
@@ -4847,6 +4852,7 @@ void vd__gfx_init()
 {
     vd__state.gfx.alloc = vd__mem_create_allocator("gfx", VD__MEMOPTION_INHERIT, "core", vd__core_heap_alloc());
     sg_setup(&(sg_desc){
+        .buffer_pool_size = 1024,
         .environment = sglue_environment(),
         .logger.func = slog_func,
     });
@@ -5188,10 +5194,8 @@ static vd__camera *vd__cam_handle_event(vd__camera *cam, const sapp_event *ev)
         }
         break;
     case SAPP_EVENTTYPE_MOUSE_ENTER:
-        printf("mouse entered!!!!\n");
         break;
     case SAPP_EVENTTYPE_MOUSE_LEAVE:
-        printf("mouse left!!!!\n");
         break;
     default:
         break;
@@ -5346,9 +5350,13 @@ void vd__dbg_draw_ground(float scale)
 
 void vd__dbg_draw_cube(HMM_Vec3 pos)
 {
-    HMM_Mat4 transform = HMM_Translate(pos);
-    vd__state.v3d.dbg.transform.buf = vd__gfx_buffer_append(vd__state.v3d.dbg.transform.buf, sizeof(HMM_Mat4),
-                                                            &transform, &vd__state.v3d.dbg.transform.offset);
+    /* vd__state.v3d.dbg.transform.buf = vd__gfx_buffer_append(vd__state.v3d.dbg.transform.buf, sizeof(HMM_Mat4), */
+    /*                                                         &transform, &vd__state.v3d.dbg.transform.offset); */
+    if (vd__state.v3d.dbg.num_boxes < (256 << 10))
+    {
+        vd__state.v3d.dbg.box_transforms[vd__state.v3d.dbg.num_boxes] = HMM_Translate(pos);
+        vd__state.v3d.dbg.num_boxes++;
+    }
 }
 
 void vd__dbg_draw_camera(vd__camera *cam)
@@ -5364,26 +5372,33 @@ void vd__dbg_draw()
     vs_params_t vs_params;
     vs_params.vp = vd__state.v3d.dbg.vp;
 
+    if (vd__state.v3d.dbg.num_boxes)
+    {
+        sg_update_buffer(vd__state.v3d.dbg.transform.buf,
+                         &(sg_range){.ptr = &vd__state.v3d.dbg.box_transforms[0],
+                                     .size = (size_t)vd__state.v3d.dbg.num_boxes * sizeof(HMM_Mat4)});
+
+        /*  sg_begin_pass(&(sg_pass){
+            .action = {
+              .colors[0] = {
+                .load_action = SG_LOADACTION_CLEAR,
+                .clear_value = { 0.13f, 0.13f, 0.13f, 1.0f } },
+              },
+              .swapchain = sglue_swapchain()
+            });*/
+        sg_apply_pipeline(vd__state.v3d.dbg.pip);
+
+        sg_apply_bindings(&(sg_bindings){.vertex_buffers[0] = vd__state.v3d.dbg.vtx_buf,
+                                         .vertex_buffers[1] = vd__state.v3d.dbg.transform.buf,
+                                         .index_buffer = vd__state.v3d.dbg.idx_buf});
+
+        sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(vs_params));
+        sg_draw(vd__state.v3d.dbg.shapes[VD__BOX].draw.base_element,
+                vd__state.v3d.dbg.shapes[VD__BOX].draw.num_elements, vd__state.v3d.dbg.num_boxes);
+    }
+
     sgl_load_matrix(&vd__state.v3d.dbg.vp.Elements[0][0]);
 
-    /*  sg_begin_pass(&(sg_pass){
-        .action = {
-          .colors[0] = {
-            .load_action = SG_LOADACTION_CLEAR,
-            .clear_value = { 0.13f, 0.13f, 0.13f, 1.0f } },
-          },
-          .swapchain = sglue_swapchain()
-        });*/
-    /* sg_apply_pipeline(vd__state.v3d.dbg.pip);
-
-    sg_apply_bindings(&(sg_bindings){.vertex_buffers[0] = vd__state.v3d.dbg.vtx_buf,
-                                     .vertex_buffers[1] = vd__state.v3d.dbg.transform.buf,
-                                     .vertex_buffer_offsets[1] = vd__state.v3d.dbg.transform.offset,
-                                     .index_buffer = vd__state.v3d.dbg.idx_buf});
-
-    sg_apply_uniforms(SG_SHADERSTAGE_VS, SLOT_vs_params, &SG_RANGE(vs_params));
-    sg_draw(vd__state.v3d.dbg.shapes[VD__BOX].draw.base_element, vd__state.v3d.dbg.shapes[VD__BOX].draw.num_elements,
-            1); */
     sgl_draw();
     // sg_end_pass();
     // sg_commit();
@@ -5391,6 +5406,7 @@ void vd__dbg_draw()
 
 void vd__dbg_draw_init()
 {
+    vd__state.v3d.dbg.num_boxes = 0;
     /* create shader */
     vd__state.v3d.dbg.shd = sg_make_shader(shapes_shader_desc(sg_query_backend()));
 
@@ -5463,6 +5479,8 @@ void vd__dbg_draw_init()
     const sg_buffer_desc ibuf_desc = sshape_index_buffer_desc(&buf);
     vd__state.v3d.dbg.vtx_buf = sg_make_buffer(&vbuf_desc);
     vd__state.v3d.dbg.idx_buf = sg_make_buffer(&ibuf_desc);
+    vd__state.v3d.dbg.transform.buf = sg_make_buffer(
+        &(sg_buffer_desc){.size = (256 << 10) * sizeof(HMM_Mat4), .usage = SG_USAGE_STREAM, .label = "instance-data"});
 }
 
 static Janet cfun_vd_dbg_draw_camera(int32_t argc, Janet *argv)
@@ -5725,38 +5743,9 @@ static void vd__v3d_doll_on_release(vd__asset_obj obj, const sx_alloc *alloc)
 
 static void vd__v3d_cube(HMM_Vec3 position, HMM_Vec3 scale)
 {
-    static const float cube_vertices[] = {                                          // pos                  normals
-                                          -1.0f, -1.0f, -1.0f, 0.0f,  0.0f,  -1.0f, // CUBE BACK FACE
-                                          1.0f,  -1.0f, -1.0f, 0.0f,  0.0f,  -1.0f, 1.0f,  1.0f,  -1.0f,
-                                          0.0f,  0.0f,  -1.0f, -1.0f, 1.0f,  -1.0f, 0.0f,  0.0f,  -1.0f,
-
-                                          -1.0f, -1.0f, 1.0f,  0.0f,  0.0f,  1.0f, // CUBE FRONT FACE
-                                          1.0f,  -1.0f, 1.0f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,  1.0f,
-                                          0.0f,  0.0f,  1.0f,  -1.0f, 1.0f,  1.0f,  0.0f,  0.0f,  1.0f,
-
-                                          -1.0f, -1.0f, -1.0f, -1.0f, 0.0f,  0.0f, // CUBE LEFT FACE
-                                          -1.0f, 1.0f,  -1.0f, -1.0f, 0.0f,  0.0f,  -1.0f, 1.0f,  1.0f,
-                                          -1.0f, 0.0f,  0.0f,  -1.0f, -1.0f, 1.0f,  -1.0f, 0.0f,  0.0f,
-
-                                          1.0f,  -1.0f, -1.0f, 1.0f,  0.0f,  0.0f, // CUBE RIGHT FACE
-                                          1.0f,  1.0f,  -1.0f, 1.0f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,
-                                          1.0f,  0.0f,  0.0f,  1.0f,  -1.0f, 1.0f,  1.0f,  0.0f,  0.0f,
-
-                                          -1.0f, -1.0f, -1.0f, 0.0f,  -1.0f, 0.0f, // CUBE BOTTOM FACE
-                                          -1.0f, -1.0f, 1.0f,  0.0f,  -1.0f, 0.0f,  1.0f,  -1.0f, 1.0f,
-                                          0.0f,  -1.0f, 0.0f,  1.0f,  -1.0f, -1.0f, 0.0f,  -1.0f, 0.0f,
-
-                                          -1.0f, 1.0f,  -1.0f, 0.0f,  1.0f,  0.0f, // CUBE TOP FACE
-                                          -1.0f, 1.0f,  1.0f,  0.0f,  1.0f,  0.0f,  1.0f,  1.0f,  1.0f,
-                                          0.0f,  1.0f,  0.0f,  1.0f,  1.0f,  -1.0f, 0.0f,  1.0f,  0.0f};
-
-    static const uint16_t cube_indices[] = {0,  1,  2,  0,  2,  3,  6,  5,  4,  7,  6,  4,  8,  9,  10, 8,  10, 11,
-                                            14, 13, 12, 15, 14, 12, 16, 17, 18, 16, 18, 19, 22, 21, 20, 23, 22, 20};
-
     ecs_entity_t e = ecs_new(vd__state.ecs.world);
     ecs_set(vd__state.ecs.world, e, vd__static_mesh,
-            {position, scale, sg_make_buffer(&(sg_buffer_desc){.data = SG_RANGE(cube_vertices)}),
-             sg_make_buffer(&(sg_buffer_desc){.type = SG_BUFFERTYPE_INDEXBUFFER, .data = SG_RANGE(cube_indices)}), 36});
+            {position, scale, vd__state.v3d.cube_vbuf, vd__state.v3d.cube_ibuf, 36});
 }
 
 static void vd__v3d_depth_pass_init(vd__v3d_offscreen_pass *depth, sg_image depth_target)
@@ -6263,6 +6252,37 @@ static void vd__v3d_init()
 
     vd__v3d_shadow_pass_init(&vd__state.v3d.fwd.shadow, VD__CONFIG_SHADOW_MAP_SIZE);
     vd__v3d_display_pass_init(&vd__state.v3d.fwd.display);
+
+    static const float cube_vertices[] = {                                          // pos                  normals
+                                          -1.0f, -1.0f, -1.0f, 0.0f,  0.0f,  -1.0f, // CUBE BACK FACE
+                                          1.0f,  -1.0f, -1.0f, 0.0f,  0.0f,  -1.0f, 1.0f,  1.0f,  -1.0f,
+                                          0.0f,  0.0f,  -1.0f, -1.0f, 1.0f,  -1.0f, 0.0f,  0.0f,  -1.0f,
+
+                                          -1.0f, -1.0f, 1.0f,  0.0f,  0.0f,  1.0f, // CUBE FRONT FACE
+                                          1.0f,  -1.0f, 1.0f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,  1.0f,
+                                          0.0f,  0.0f,  1.0f,  -1.0f, 1.0f,  1.0f,  0.0f,  0.0f,  1.0f,
+
+                                          -1.0f, -1.0f, -1.0f, -1.0f, 0.0f,  0.0f, // CUBE LEFT FACE
+                                          -1.0f, 1.0f,  -1.0f, -1.0f, 0.0f,  0.0f,  -1.0f, 1.0f,  1.0f,
+                                          -1.0f, 0.0f,  0.0f,  -1.0f, -1.0f, 1.0f,  -1.0f, 0.0f,  0.0f,
+
+                                          1.0f,  -1.0f, -1.0f, 1.0f,  0.0f,  0.0f, // CUBE RIGHT FACE
+                                          1.0f,  1.0f,  -1.0f, 1.0f,  0.0f,  0.0f,  1.0f,  1.0f,  1.0f,
+                                          1.0f,  0.0f,  0.0f,  1.0f,  -1.0f, 1.0f,  1.0f,  0.0f,  0.0f,
+
+                                          -1.0f, -1.0f, -1.0f, 0.0f,  -1.0f, 0.0f, // CUBE BOTTOM FACE
+                                          -1.0f, -1.0f, 1.0f,  0.0f,  -1.0f, 0.0f,  1.0f,  -1.0f, 1.0f,
+                                          0.0f,  -1.0f, 0.0f,  1.0f,  -1.0f, -1.0f, 0.0f,  -1.0f, 0.0f,
+
+                                          -1.0f, 1.0f,  -1.0f, 0.0f,  1.0f,  0.0f, // CUBE TOP FACE
+                                          -1.0f, 1.0f,  1.0f,  0.0f,  1.0f,  0.0f,  1.0f,  1.0f,  1.0f,
+                                          0.0f,  1.0f,  0.0f,  1.0f,  1.0f,  -1.0f, 0.0f,  1.0f,  0.0f};
+
+    static const uint16_t cube_indices[] = {0,  1,  2,  0,  2,  3,  6,  5,  4,  7,  6,  4,  8,  9,  10, 8,  10, 11,
+                                            14, 13, 12, 15, 14, 12, 16, 17, 18, 16, 18, 19, 22, 21, 20, 23, 22, 20};
+    vd__state.v3d.cube_vbuf = sg_make_buffer(&(sg_buffer_desc){.data = SG_RANGE(cube_vertices)});
+    vd__state.v3d.cube_ibuf =
+        sg_make_buffer(&(sg_buffer_desc){.type = SG_BUFFERTYPE_INDEXBUFFER, .data = SG_RANGE(cube_indices)});
 }
 
 static Janet cfun_vd_v3d_cube(int32_t argc, Janet *argv)

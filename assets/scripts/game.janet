@@ -17,30 +17,146 @@
              :doll-asset nil
              :player nil
              :player-velocity 0.0
-             :player-angular-velocity 0.0})
+             :player-angular-velocity 0.0
+             :map nil
+             :rooms nil})
 
-(defn gen []
-  (def {:w w
-        :h h
-        :n n
-        :pixels pixels} (state :blueprint-img))
-  (prin "\n")
-  (for y 0 h
-    (for x 0 w
+(defn test-both-sides [x y w h tile-type]
+  # (printf "testing both sides: %s, against tile type: %s"
+   # (get (state :map) (+ x (* w y)))
+   # (get (state :map) (+ (- (- w 1) x) (* w y)))
+   # tile-type)
+  (=
+   ((state :map) (+ x (* w y)))
+   ((state :map) (+ (- (- w 1) x) (* w y)))
+   tile-type))
+
+(defn test-room [x-low y-low x-high y-high tile-type w h]
+  (prompt :passed
+     (if (or (< x-low 0) (< y-low 0) (>= x-high (div w 2)) (>= y-high h)) (return :passed false))
+     (for x x-low x-high
+       (for y y-low y-high
+         (if (not (test-both-sides x y w h tile-type)) (return :passed false))))
+     (return :passed true)))
+
+
+(defn write-to-both-sides [sw sh x y t]
+  (if (= t :internals)
+    (do
+      (dbg/draw/cube @[(- 256 x) 0.0 (- 256 y)])
+      (dbg/draw/cube @[(- 256 (- (- sw 1) x)) 0.0 (- 256 y)]))
+      # (v3d/cube @[x 0.0 y] @[1.0 0.1 1.0])
+      # (v3d/cube @[(- (- sw 1) x) 0.0 y] @[1.0 0.1 1.0])))
+    (if (= t :wall)
       (do
-        (def r (get pixels (* (+ x (* w y)) 4)))
-        (def g (get pixels (+ 1 (* (+ x (* w y)) 4))))
-        (def b (get pixels (+ 2 (* (+ x (* w y)) 4))))
-        (def a (get pixels (+ 3 (* (+ x (* w y)) 4))))
-        (if (and (= a 255) (and (= b 0) (and (= g 0) (= r 0)))) (prin ".") (prin " "))))
-    (prin "\n")))
+        (dbg/draw/cube @[(- 256 x) 5.0 (- 256 y)])
+        (dbg/draw/cube @[(- 256 (- (- sw 1) x)) 5.0 (- 256 y)]))))
+        # (v3d/cube @[x 0.1 y] @[1.0 1.0 1.0])
+        # (v3d/cube @[(- (- sw 1) x) 0.1 y] @[1.0 1.0 1.0]))))
+  (set (state :map) (put (state :map) (+ x (* sw y)) t))
+  (set (state :map) (put (state :map) (+ (- (- sw 1) x) (* sw y)) t)))
+
+(defn write-room [sw sh x-low y-low x-high y-high floor-type wall-type]
+  (for y y-low y-high
+    (for x x-low x-high
+      (if (or (= x x-low) (= y y-low) (= x x-high) (= y y-high))
+        (write-to-both-sides sw sh x y wall-type)
+        (write-to-both-sides sw sh x y floor-type)))))
+
+(defn gen-rooms [sw sh]
+  (set (state :rooms) @[])
+  (def rng (math/rng))
+  (for i 0 100
+    (def room-x (+ (+ (math/rng-int rng 10) (div (- 100 i) 10)) 2))
+    (def room-y (+ (+ (math/rng-int rng 10) (div (- 100 i) 10)) 2))
+    (var x (math/rng-int rng (- (div sw 2) room-x)))
+    (var y (math/rng-int rng (- sh room-y)))
+    (var primed false)
+    (var placed false)
+    (prompt :x
+       (while (not placed)
+         (++ x)
+         (var valid (test-room (- x 1) (- y 1) (+ x (+ room-x 1)) (+ y (+ room-y 1)) :internals sw sh))
+         (if valid
+           (set primed true)
+           (if primed
+             (do
+               (set placed true)
+               (-- x))))
+         (if (>= x sw) (return :x))))
+
+    (set primed false)
+    (set placed false)
+
+    (prompt :y
+       (while (not placed)
+         (++ y)
+         (var valid (test-room (- x 1) (- y 1) (+ x (+ room-x 1)) (+ y (+ room-y 1)) :internals sw sh))
+         (if valid
+           (set primed true)
+           (if primed
+             (do
+               (set placed true)
+               (-- y))))
+         (if (>= y sh) (return :y))))
+
+    (if (test-room x y (+ x room-x) (+ y room-y) :internals sw sh)
+      (do
+        (set (state :rooms) (array/push (state :rooms) @[x y (+ x room-x) (+ y room-y)]))
+        (set (state :rooms) (array/push (state :rooms) @[(- (- sw (+ x room-x)) 1) y (- (- sw x) 1) (+ y room-y)]))
+        (printf "writing room #%d at: %d, %d, %d, %d" i x y (+ x room-x) (+ y room-y))
+        (write-room sw sh x y (+ x room-x) (+ y room-y) :floor :wall)))))
+
+(defn gen-structure [sw sh]
+  (def {:w bp-w
+        :h bp-h
+        :pixels pixels} (state :blueprint-img))
+  (set (state :map) (array/new-filled (* sw sh) :void))
+  (for y 0 sh
+    (for x 0 (div sw 2)
+      (do
+        (def tx (math/floor (* (/ x sw) bp-w)))
+        (def ty (math/floor (* (/ y sh) bp-h)))
+        (def r (get pixels (* (+ tx (* bp-w ty)) 4)))
+        (def g (get pixels (+ 1 (* (+ tx (* bp-w ty)) 4))))
+        (def b (get pixels (+ 2 (* (+ tx (* bp-w ty)) 4))))
+        (def a (get pixels (+ 3 (* (+ tx (* bp-w ty)) 4))))
+        (if (and (= a 255) (and (= b 0) (and (= g 0) (= r 0))))
+          (write-to-both-sides sw sh x y :internals))))))
+
+(defn gen [sw sh]
+  (gen-structure sw sh)
+  (gen-rooms sw sh))
+
+  # (set (state :rooms) @[])
+  # (def rng (math/rng 7887))
+  # (loop [i :range [0 100]]
+  #   (def room-x (+ (+ (math/rng-int rng 9) (div (- 100 i) 10)) 2))
+  #   (def room-y (+ (+ (math/rng-int rng 9) (div (- 100 i) 10)) 2))
+  #   (printf "room-x: %d, room-y: %d, w: %d, h: %d" room-x room-y w h)
+  #   (var x (math/rng-int rng (- (- (div 128 2) room-x) 1)))
+  #   (var y (math/rng-int rng (- (- 128 room-y) 1)))
+  #   (var primed false)
+  #   (var placed false)
+  #   (printf "x: %d, y: %d" x y)
+  #   (while (not placed)
+  #     (++ x)
+  #     (var valid (test-room (- x 1) (- y 1) (+ x (+ room-x 1)) (+ y (+ room-y 1)) :internals w h))
+  #     (if valid
+  #       (set primed true)
+  #       (if primed
+  #         (do
+  #           (set placed true)
+  #           (-- x))))
+  #     (if (>= x w) (break)))))
+
 
   # (def len (length pixels))
   # (var idx 0)
   # (var row 0)
   # (var col 0)
   # (while (< (- (+ idx n) 1) len)
-  #   (printf "R: %d, G: %d, B: %d, A: %d"
+  #   (printf "r: %d, g: %d, b: %d, a: %d"
   #           (get pixels idx)
   #           (get pixels (+ idx 1))
   #           (get pixels (+ idx 2))
@@ -56,11 +172,11 @@
   (set (state :doll-asset) (asset/load "doll" "assets/dolls/character.doll"))
   (set (state :blueprint-img) (gfx/img/get (state :blueprint-asset)))
 
-  (gen)
+  (gen 512 512)
 
   (set (state :camera) (game/object @{:x 0.0 :y 0.0 :z 0.0} @{:x 0.0 :y 0.0 :z 0.0} @{:x 0.0 :y 0.0 :z 0.0 :w 1.0}))
   (game/object/set (state :camera) component/camera (cam/orbit @{:min-dist 1.0
-                                                                 :max-dist 50.0
+                                                                 :max-dist 250.0
                                                                  :center @{:x 0 :y 0 :z 0}
                                                                  :distance 5.0
                                                                  :latitude 45.0
